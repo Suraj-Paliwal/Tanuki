@@ -1,0 +1,292 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Tanuki</title>
+<style>
+  :root{--bg:#12141a;--panel:#1c1f27;--edge:#2c313c;--ink:#e9e7e2;--dim:#8d96a5;--accent:#4f7cc4}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.55 system-ui,-apple-system,sans-serif;overflow:hidden}
+  canvas{display:block}
+  #panel{position:fixed;left:18px;top:18px;width:330px;z-index:3;background:#1c1f27e0;
+         border:1px solid var(--edge);border-radius:12px;padding:16px;backdrop-filter:blur(10px)}
+  h1{font-size:15px;margin:0 0 3px;letter-spacing:.2px}
+  .sub{color:var(--dim);font-size:12px;margin-bottom:12px}
+  textarea{width:100%;height:56px;resize:vertical;background:#0f1117;color:var(--ink);
+           border:1px solid var(--edge);border-radius:8px;padding:8px 10px;font:inherit}
+  .row{display:flex;gap:8px;margin-top:9px;align-items:center}
+  select{flex:1;background:#0f1117;color:var(--ink);border:1px solid var(--edge);
+         border-radius:8px;padding:7px 8px;font:inherit}
+  button{background:var(--accent);color:#fff;border:0;border-radius:8px;padding:9px 14px;
+         font:inherit;font-weight:600;cursor:pointer}
+  button:hover{filter:brightness(1.12)} button:disabled{opacity:.45;cursor:default}
+  button.ghost{background:#2a2f3a}
+  .meters{margin-top:14px;font:11px ui-monospace,SFMono-Regular,monospace}
+  .m{display:flex;align-items:center;gap:7px;margin:3px 0}
+  .m span{width:38px;color:var(--dim)}
+  .m u{display:block;height:6px;background:#0f1117;border-radius:3px;flex:1;overflow:hidden}
+  .m u i{display:block;height:100%;width:0;background:linear-gradient(90deg,#4f7cc4,#77a6e8)}
+  #msg{margin-top:11px;font-size:12px;color:var(--dim);min-height:32px}
+  #msg.err{color:#e08585}
+  .hint{position:fixed;right:18px;bottom:16px;color:#5c6472;font-size:12px;z-index:3}
+</style>
+
+<div id="panel">
+  <h1>Tanuki</h1>
+  <div class="sub" id="engine">connecting…</div>
+  <textarea id="text">こんにちは、たぬきです。きょうはいいてんきですね。</textarea>
+  <div class="row">
+    <select id="voice">
+      <option value="">default voice</option>
+      <option value="ja-JP-NanamiNeural">Nanami (edge, ja-JP)</option>
+      <option value="ja-JP-KeitaNeural">Keita (edge, ja-JP)</option>
+      <option value="ja-JP-AoiNeural">Aoi (edge, ja-JP)</option>
+      <option value="ja-JP-DaichiNeural">Daichi (edge, ja-JP)</option>
+    </select>
+  </div>
+  <div class="row">
+    <button id="say">Speak</button>
+    <button id="stop" class="ghost">Stop</button>
+    <button id="mic" class="ghost">Mic</button>
+  </div>
+  <div class="row" style="gap:10px">
+    <label style="color:var(--dim);font-size:12px;width:58px">sharpen</label>
+    <input id="sharp" type="range" min="0" max="1" step="0.05" value="0.25" style="flex:1">
+    <span id="sharpv" style="font:11px ui-monospace,monospace;color:var(--dim);width:26px">.25</span>
+  </div>
+  <div class="row" style="gap:10px">
+    <label style="color:var(--dim);font-size:12px;width:58px">eyes</label>
+    <input id="eyes" type="range" min="0" max="1" step="0.05" value="0" style="flex:1">
+    <span id="eyesv" style="font:11px ui-monospace,monospace;color:var(--dim);width:26px">open</span>
+  </div>
+  <div class="row" style="gap:10px">
+    <label style="color:var(--dim);font-size:12px;width:58px">trim</label>
+    <input id="offset" type="range" min="-0.15" max="0.15" step="0.005" value="0" style="flex:1">
+    <span id="offsetv" style="font:11px ui-monospace,monospace;color:var(--dim);width:34px">0ms</span>
+  </div>
+  <div id="sync" style="font:11px ui-monospace,monospace;color:var(--dim);margin-top:4px"></div>
+  <div class="row" style="gap:8px;font-size:12px;color:var(--dim)">
+    <label><input id="idleblink" type="checkbox" checked> idle blink</label>
+    <label><input id="bodymove" type="checkbox" checked> body motion</label>
+  </div>
+  <div class="meters" id="meters"></div>
+  <div id="msg"></div>
+</div>
+<div class="hint">drag to orbit · scroll to zoom</div>
+<canvas id="c"></canvas>
+
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/"
+} }
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader }    from 'three/addons/loaders/GLTFLoader.js';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass }     from 'three/addons/postprocessing/RenderPass.js';
+import { ShaderPass }     from 'three/addons/postprocessing/ShaderPass.js';
+import { OutputPass }     from 'three/addons/postprocessing/OutputPass.js';
+import { TanukiLipSync, VISEMES } from './src/tanuki-lipsync.js';
+import { BodyMotion }   from './src/body.js';
+import { applyTextureQuality, CASShader } from './src/quality.js';
+
+const MODEL = './model/tanuki.gltf';   // separate WebP textures, full-res normal map
+const API   = '/api/say';
+
+const msg = document.getElementById('msg');
+const say = (t, err=false) => { msg.textContent = t; msg.className = err ? 'err' : ''; };
+
+/* ---------- scene ---------- */
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+// Render at up to 2x and let the sharpen pass work on the downsampled result;
+// on a 1x display this alone removes most of the softness.
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x12141a);
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+
+const camera = new THREE.PerspectiveCamera(35, 1, 0.01, 100);
+const controls = new OrbitControls(camera, canvas);
+controls.enableDamping = true; controls.dampingFactor = 0.08;
+controls.minDistance = 0.6; controls.maxDistance = 12;
+
+scene.add(new THREE.HemisphereLight(0xffffff, 0x33384a, 0.9));
+const key  = new THREE.DirectionalLight(0xfff2e4, 2.2); key.position.set(-1.6, 2.2, 2.6); scene.add(key);
+const fill = new THREE.DirectionalLight(0xd8e6ff, 0.7); fill.position.set(2.2, 0.6, 1.6); scene.add(fill);
+const rim  = new THREE.DirectionalLight(0xffffff, 1.1); rim.position.set(0.6, 1.8, -2.4); scene.add(rim);
+
+// Pass order matters. EffectComposer renders into a linear target, so tone
+// mapping and the sRGB conversion no longer happen automatically - without an
+// OutputPass the whole image comes out washed and orange. Sharpening goes
+// AFTER it, because CAS's contrast clamp assumes display-space 0..1 values.
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+composer.addPass(new OutputPass());
+const cas = new ShaderPass(CASShader);
+composer.addPass(cas);
+
+function resize(){ const w=innerWidth,h=innerHeight;
+  renderer.setSize(w,h,false); composer.setSize(w,h);
+  const dpr = renderer.getPixelRatio();
+  cas.uniforms.resolution.value.set(w*dpr, h*dpr);
+  camera.aspect=w/h; camera.updateProjectionMatrix(); }
+addEventListener('resize', resize); resize();
+
+/* ---------- meters ---------- */
+const rows = {};
+const meters = document.getElementById('meters');
+for (const n of [...VISEMES, 'Blink']) {
+  const d = document.createElement('div'); d.className = 'm';
+  d.innerHTML = `<span>${n}</span><u><i></i></u>`;
+  meters.appendChild(d); rows[n] = d.querySelector('i');
+}
+
+/* ---------- tts status ----------
+   Fired before the model load, not after: the GLB is 19 MB, and awaiting it
+   first leaves the badge reading "connecting…" for the whole download. */
+const statusReq = fetch('/api/status').then(r => r.json()).catch(() => null);
+
+/* ---------- model ---------- */
+let tanuki = null, rig = null, body = null;
+try {
+  tanuki = await TanukiLipSync.load(MODEL, new GLTFLoader());
+  rig = new THREE.Group(); rig.add(tanuki.object); scene.add(rig);
+  body = new BodyMotion(rig);
+
+  // Frame the whole character, then aim the orbit pivot at the chest so the
+  // default view shows all of it and rotation feels centred.
+  const box  = new THREE.Box3().setFromObject(tanuki.object);
+  const size = box.getSize(new THREE.Vector3());
+  const mid  = box.getCenter(new THREE.Vector3());
+  const dist = (size.y * 0.62) / Math.tan((camera.fov * Math.PI / 180) / 2);
+  // Slide the view left on wide screens so the control panel does not sit on
+  // top of the character. On narrow screens keep it centred and let the user pan.
+  const shift = innerWidth > 900 ? size.x * 0.75 : 0;
+  controls.target.set(mid.x - shift, mid.y + size.y * 0.06, mid.z);
+  camera.position.set(mid.x - shift, mid.y + size.y * 0.18, mid.z + dist);
+  controls.update();
+
+  const aniso = applyTextureQuality(tanuki.object, renderer);
+  window.__aniso = aniso;
+  window.__tanukiReady = true; window.__rig = tanuki;
+  window.__cas = cas;
+  window.__morphNames = tanuki.morphNames;
+} catch (e) {
+  say('could not load the model: ' + e.message, true);
+  window.__tanukiError = String(e);
+}
+
+const clock = new THREE.Clock();
+renderer.setAnimationLoop(() => {
+  const dt = clock.getDelta();
+  if (tanuki) {
+    tanuki.update(dt);
+    body?.update(dt, tanuki);
+    for (const n in rows) rows[n].style.width = (tanuki.current[n] * 100).toFixed(1) + '%';
+    window.__weights = { ...tanuki.current };
+  }
+  controls.update();
+  composer.render();
+});
+
+/* ---------- tts ---------- */
+{
+  const st = await statusReq;
+  document.getElementById('engine').textContent = st
+    ? `voice engine: ${st.engine}` + (st.engine === 'offline' ? '  ·  pip install edge-tts for a real voice' : '')
+    : 'server not reachable — start tanuki_tts_server.py';
+}
+
+// One <audio> reused for every line. createMediaElementSource can only ever be
+// called once per element, so reusing it keeps the live-analysis path valid.
+const audio = new Audio(); audio.crossOrigin = 'anonymous';
+const btn = document.getElementById('say');
+
+btn.onclick = async () => {
+  if (!tanuki) return;
+  btn.disabled = true;
+  say('synthesising…');
+  try {
+    const r = await fetch(API, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        text: document.getElementById('text').value,
+        voice: document.getElementById('voice').value || null,
+        blink: true,
+      }),
+    });
+    const data = await r.json();
+    if (data.error) throw new Error(data.error);
+    showSync();
+    const sp = data.speech ? ` · speech ${data.speech[0]}–${data.speech[1]}s` : '';
+    say(`${data.engine} · ${data.duration.toFixed(2)}s${sp} · ${data.kana}`);
+    audio.src = data.audio;
+    await tanuki.speak({ audio, track: data.track });
+    say(`done · ${data.kana}`);
+  } catch (e) {
+    say(String(e.message || e), true);
+  } finally {
+    btn.disabled = false;
+  }
+};
+// Eye override. Holding this above 0 pins the blink shut so the closed shape
+// can be inspected; idle blinking is suppressed while it is held.
+const eyesEl = document.getElementById('eyes');
+eyesEl.oninput = () => {
+  const v = parseFloat(eyesEl.value);
+  document.getElementById('eyesv').textContent =
+    v < 0.02 ? 'open' : v > 0.98 ? 'shut' : v.toFixed(2).slice(1);
+  if (tanuki) {
+    tanuki.idleBlink = v < 0.02 && document.getElementById('idleblink').checked;
+    // An override, not setViseme: update() clears every goal each frame, so a
+    // plain set is washed out on the very next tick.
+    tanuki.setOverride('Blink', v < 0.02 ? null : v);
+  }
+};
+document.getElementById('idleblink').onchange = (e) => {
+  if (tanuki) tanuki.idleBlink = e.target.checked && parseFloat(eyesEl.value) < 0.02;
+};
+document.getElementById('bodymove').onchange = (e) => {
+  if (body) { body.enabled = e.target.checked; if (!e.target.checked) body.reset(); }
+};
+// Sync is measured, not dialled. AudioContext.outputLatency reports how long
+// the sound still has to travel after audio.currentTime says it played, which
+// is ~10 ms on wired output and 150 ms+ on Bluetooth. The trim below is a
+// fine adjustment on top and should normally stay at zero.
+const offsetEl = document.getElementById('offset');
+function showSync() {
+  if (!tanuki) return;
+  const el = document.getElementById('sync');
+  const lat = tanuki.measuredLatency, lead = tanuki.lead, tot = tanuki.timeShift();
+  el.textContent = `output latency ${(lat*1000).toFixed(0)}ms + lead ${(lead*1000).toFixed(0)}ms`
+                 + ` = mouth leads by ${(tot*1000).toFixed(0)}ms`;
+}
+offsetEl.oninput = () => {
+  const v = parseFloat(offsetEl.value);
+  document.getElementById('offsetv').textContent = (v * 1000).toFixed(0) + 'ms';
+  if (tanuki) { tanuki.offset = v; showSync(); }
+};
+if (tanuki) tanuki.measureLatency().then(showSync);
+
+const sharpEl = document.getElementById('sharp');
+sharpEl.oninput = () => {
+  cas.uniforms.sharpness.value = parseFloat(sharpEl.value);
+  document.getElementById('sharpv').textContent = (+sharpEl.value).toFixed(2).slice(1);
+};
+document.getElementById('stop').onclick = () => { tanuki?.stop(); say('stopped'); };
+document.getElementById('mic').onclick = async () => {
+  try {
+    const s = await navigator.mediaDevices.getUserMedia({ audio: true });
+    await tanuki.listen(s);
+    say('listening — try saying あ い う え お');
+  } catch (e) { say('microphone denied', true); }
+};
+</script>

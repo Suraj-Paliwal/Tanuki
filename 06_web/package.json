@@ -1,0 +1,24 @@
+{
+  "name": "tanuki-lipsync",
+  "version": "1.0.0",
+  "description": "Drives the tanuki rig's viseme morph targets from Japanese speech - text-driven tracks or live formant analysis.",
+  "type": "module",
+  "main": "./src/tanuki-lipsync.js",
+  "exports": {
+    ".": "./src/tanuki-lipsync.js",
+    "./react": "./src/react.jsx",
+    "./formants": "./src/formants.js"
+  },
+  "files": ["src"],
+  "peerDependencies": {
+    "three": ">=0.150.0",
+    "react": ">=18",
+    "@react-three/fiber": ">=8"
+  },
+  "peerDependenciesMeta": {
+    "react": { "optional": true },
+    "@react-three/fiber": { "optional": true }
+  },
+  "sideEffects": false,
+  "license": "MIT"
+}

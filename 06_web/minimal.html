@@ -1,0 +1,62 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Tanuki — minimal</title>
+<style>body{margin:0;background:#181b21}canvas{display:block}</style>
+<button style="position:fixed;z-index:1;margin:14px;padding:10px 16px;font:15px system-ui;
+        border:0;border-radius:8px;background:#3f6ea8;color:#fff;cursor:pointer" id="go">Speak</button>
+<canvas id="c"></canvas>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/" } }
+</script>
+<script type="module">
+// The whole integration, with nothing else in the way.
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { TanukiLipSync } from './src/tanuki-lipsync.js';
+import { BodyMotion }   from './src/body.js';
+
+const renderer = new THREE.WebGLRenderer({ canvas: c, antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x181b21);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x333844, 1.4));
+const key = new THREE.DirectionalLight(0xffffff, 2.2);
+key.position.set(-1.5, 2, 2.5); scene.add(key);
+
+const camera = new THREE.PerspectiveCamera(30, innerWidth / innerHeight, 0.01, 100);
+
+const tanuki = await TanukiLipSync.load('./model/tanuki.gltf', new GLTFLoader());
+const rig = new THREE.Group(); rig.add(tanuki.object); scene.add(rig);
+const body = new BodyMotion(rig);   // breathing + sway + a nod while speaking
+
+// aim at the face: it sits about 70% up the body, not at the bbox centre
+const box = new THREE.Box3().setFromObject(tanuki.object);
+const size = box.getSize(new THREE.Vector3());
+const y = box.min.y + size.y * 0.68;
+camera.position.set(0, y, size.y * 1.20);
+camera.lookAt(0, y - 0.06, 0);
+
+const clock = new THREE.Clock();
+renderer.setAnimationLoop(() => {
+  const dt = clock.getDelta();
+  tanuki.update(dt);                        // every frame
+  body.update(dt, tanuki);
+  renderer.render(scene, camera);
+});
+
+const audio = new Audio();                   // reuse one element for every line
+document.getElementById('go').onclick = async () => {
+  const r = await fetch('/api/say', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text: 'こんにちは、たぬきです', blink: true }),
+  });
+  const d = await r.json();
+  audio.src = d.audio;
+  await tanuki.speak({ audio, track: d.track });
+};
+window.__ready = true;
+</script>

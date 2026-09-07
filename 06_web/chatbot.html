@@ -1,0 +1,221 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Tanuki chatbot</title>
+<style>
+  :root{
+    --bg:#f4f2ee; --panel:#ffffff; --edge:#e2ded6; --ink:#23211e; --dim:#8a857c;
+    --me:#3f6ea8; --stage:#1a1d23; --accent:#3f6ea8;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:15px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif}
+  .app{height:100%;max-width:1080px;margin:0 auto;display:flex;gap:18px;padding:18px}
+
+  /* avatar stage */
+  .stage{flex:0 0 420px;background:var(--stage);border-radius:16px;position:relative;overflow:hidden}
+  .stage canvas{display:block;width:100%;height:100%}
+  .status{position:absolute;left:14px;bottom:12px;font-size:12px;color:#8a94a6}
+
+  /* chat */
+  .chat{flex:1;display:flex;flex-direction:column;background:var(--panel);
+        border:1px solid var(--edge);border-radius:16px;overflow:hidden;min-width:0}
+  .log{flex:1;overflow-y:auto;padding:20px;display:flex;flex-direction:column;gap:12px}
+  .msg{max-width:82%;padding:10px 14px;border-radius:14px;white-space:pre-wrap;word-break:break-word}
+  .msg.bot{background:#f0eeea;border-bottom-left-radius:5px;align-self:flex-start}
+  .msg.me{background:var(--me);color:#fff;border-bottom-right-radius:5px;align-self:flex-end}
+  .msg.thinking{color:var(--dim);font-style:italic}
+  .bar{display:flex;gap:9px;padding:14px;border-top:1px solid var(--edge)}
+  input{flex:1;min-width:0;border:1px solid var(--edge);border-radius:10px;
+        padding:11px 14px;font:inherit;background:#fbfaf8;color:var(--ink)}
+  input:focus{outline:2px solid #cddcf0;border-color:#a9c3e3}
+  button{border:0;border-radius:10px;padding:11px 18px;font:inherit;font-weight:600;
+         background:var(--accent);color:#fff;cursor:pointer}
+  button:disabled{opacity:.45;cursor:default}
+
+  @media (max-width:860px){
+    .app{flex-direction:column;padding:12px;gap:12px}
+    .stage{flex:0 0 260px}
+  }
+</style>
+
+<div class="app">
+  <div class="stage"><canvas id="c"></canvas><div class="status" id="status">loading…</div></div>
+  <div class="chat">
+    <div class="log" id="log"></div>
+    <form class="bar" id="bar">
+      <input id="input" placeholder="日本語で話しかけてください…" autocomplete="off">
+      <button id="send">Send</button>
+    </form>
+  </div>
+</div>
+
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/"
+} }
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader }        from 'three/addons/loaders/GLTFLoader.js';
+import { RoomEnvironment }   from 'three/addons/environments/RoomEnvironment.js';
+import { EffectComposer }    from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass }        from 'three/addons/postprocessing/RenderPass.js';
+import { ShaderPass }        from 'three/addons/postprocessing/ShaderPass.js';
+import { OutputPass }        from 'three/addons/postprocessing/OutputPass.js';
+import { TanukiLipSync }               from './src/tanuki-lipsync.js';
+import { BodyMotion }                  from './src/body.js';
+import { applyTextureQuality, CASShader } from './src/quality.js';
+
+const MODEL   = './model/tanuki.gltf';
+const TTS_API = '/api/say';          // tanuki_tts_server.py
+
+/* ══ 1. the avatar ══════════════════════════════════════════════════════ */
+
+const canvas   = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+
+const scene  = new THREE.Scene();
+scene.background = new THREE.Color(0x1a1d23);
+scene.environment = new THREE.PMREMGenerator(renderer)
+  .fromScene(new RoomEnvironment(), 0.04).texture;
+const camera = new THREE.PerspectiveCamera(30, 1, 0.01, 100);
+
+scene.add(new THREE.HemisphereLight(0xffffff, 0x33384a, 0.9));
+for (const [x, y, z, i] of [[-1.6, 2.2, 2.6, 2.2], [2.2, 0.6, 1.6, 0.7], [0.6, 1.8, -2.4, 1.1]]) {
+  const l = new THREE.DirectionalLight(0xffffff, i); l.position.set(x, y, z); scene.add(l);
+}
+
+// RenderPass -> OutputPass -> sharpen. OutputPass is not optional: the composer
+// renders to a linear target, so without it tone mapping and the sRGB
+// conversion stop happening and everything comes out washed and orange.
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+composer.addPass(new OutputPass());
+const cas = new ShaderPass(CASShader);
+cas.uniforms.sharpness.value = 0.25;
+composer.addPass(cas);
+
+function resize() {
+  const r = canvas.parentElement.getBoundingClientRect();
+  const w = Math.max(1, r.width | 0), h = Math.max(1, r.height | 0);
+  renderer.setSize(w, h, false); composer.setSize(w, h);
+  const dpr = renderer.getPixelRatio();
+  cas.uniforms.resolution.value.set(w * dpr, h * dpr);
+  camera.aspect = w / h; camera.updateProjectionMatrix();
+}
+addEventListener('resize', resize);
+
+const status = document.getElementById('status');
+let tanuki = null, rig = null, body = null;
+try {
+  tanuki = await TanukiLipSync.load(MODEL, new GLTFLoader());
+  rig = new THREE.Group(); rig.add(tanuki.object); scene.add(rig);
+  body = new BodyMotion(rig);
+  applyTextureQuality(tanuki.object, renderer);   // anisotropy; off by default in three.js
+
+  // Frame the head and shoulders. glTF is Y-up while the model was authored
+  // Z-up, so the face sits about 70% of the way up the body - aiming at the
+  // bounding-box centre points the camera at the belly.
+  const box  = new THREE.Box3().setFromObject(tanuki.object);
+  const size = box.getSize(new THREE.Vector3());
+  const mid  = box.getCenter(new THREE.Vector3());
+  const y    = box.min.y + size.y * 0.68;
+  camera.position.set(mid.x - 0.02, y, mid.z + size.y * 1.20);
+  camera.lookAt(mid.x - 0.02, y - 0.06, mid.z);
+  resize();
+  status.textContent = 'ready';
+} catch (e) {
+  status.textContent = 'model failed to load';
+  console.error(e);
+}
+
+const clock = new THREE.Clock();
+renderer.setAnimationLoop(() => {
+  const dt = clock.getDelta();
+  if (tanuki) { tanuki.update(dt); body.update(dt, tanuki); }
+  composer.render();
+});
+
+/* ══ 2. YOUR CHATBOT GOES HERE ══════════════════════════════════════════
+   Replace the body of this function with a call to your own backend.
+   It takes what the user typed and returns what the tanuki should say.
+   Reply in Japanese kana or romaji - kanji needs pykakasi on the server. */
+
+async function askYourBot(userText) {
+  // return (await (await fetch('/api/chat', {
+  //   method: 'POST', headers: { 'Content-Type': 'application/json' },
+  //   body: JSON.stringify({ message: userText }),
+  // })).json()).reply;
+
+  await new Promise(r => setTimeout(r, 400));          // pretend to think
+  return `${userText}、ですね。わかりました。`;          // placeholder echo
+}
+
+/* ══ 3. speak ═══════════════════════════════════════════════════════════ */
+
+// One <audio> for the whole session. createMediaElementSource can only ever be
+// called once per element, so a fresh Audio() per line breaks live analysis.
+const audio = new Audio();
+audio.crossOrigin = 'anonymous';
+
+async function speak(text) {
+  const res = await fetch(TTS_API, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text, blink: true }),
+  });
+  const data = await res.json();
+  if (data.error) throw new Error(data.error);
+  audio.src = data.audio;
+  await tanuki.speak({ audio, track: data.track });   // resolves when audio ends
+}
+
+/* ══ 4. chat plumbing ═══════════════════════════════════════════════════ */
+
+const log = document.getElementById('log');
+const input = document.getElementById('input');
+const send = document.getElementById('send');
+
+function bubble(text, who, cls = '') {
+  const d = document.createElement('div');
+  d.className = `msg ${who} ${cls}`;
+  d.textContent = text;
+  log.appendChild(d);
+  log.scrollTop = log.scrollHeight;
+  return d;
+}
+
+document.getElementById('bar').onsubmit = async (e) => {
+  e.preventDefault();
+  const text = input.value.trim();
+  if (!text || !tanuki) return;
+  input.value = '';
+  send.disabled = true;
+  bubble(text, 'me');
+  const pending = bubble('…', 'bot', 'thinking');
+  try {
+    const reply = await askYourBot(text);
+    pending.remove();
+    bubble(reply, 'bot');
+    status.textContent = 'speaking…';
+    await speak(reply);
+    status.textContent = 'ready';
+  } catch (err) {
+    pending.remove();
+    bubble('(error: ' + err.message + ')', 'bot');
+    status.textContent = 'ready';
+  } finally {
+    send.disabled = false;
+    input.focus();
+  }
+};
+
+bubble('こんにちは！なにか話しかけてください。', 'bot');
+input.focus();
+window.__ready = true; window.__rig = tanuki; window.__rigGroup = rig; window.__body = body;
+</script>
