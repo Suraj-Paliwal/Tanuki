@@ -30,6 +30,7 @@ model/                tanuki.gltf + .bin + 3 WebP textures (8 morph targets)
 src/
   tanuki-lipsync.js   the driver: loads the model, plays audio, moves the mouth
   body.js             breathing, weight shift, nod while speaking
+  bands.js            three-band audio energy — what the body moves to
   quality.js          anisotropy + contrast-adaptive sharpening
   formants.js         browser-side vowel detection, for audio with no script
   react.jsx           <Tanuki ref={...} /> for React Three Fiber
@@ -105,6 +106,72 @@ shifts it so the mouth stays shut through the leading silence. Same clip after
 the fix: +30 ms, and correlation with the audio envelope went 0.11 → 0.61.
 `/api/say` returns the span it found as `"speech": [start, end]`.
 
+### The timing comes from the recording, not from a model
+
+The mora model gives every mora the same beat. Real speech does not: TTS
+engines stretch phrase-final morae, compress unstressed ones, and pause at
+commas for as long as they feel like. Fitting a uniform track to the clip's
+duration only corrects the *average* — the mouth still drifts inside the
+sentence and snaps back at the end.
+
+So the track is warped onto the audio's own rhythm. Both signals describe the
+same thing in different units: the track predicts how open the mouth should be,
+the recording's energy envelope shows how open it actually was. Dynamic time
+warping finds the monotonic mapping between them and retimes the keyframes
+along it.
+
+No model, no calibration, no per-voice tuning — it adapts to each utterance.
+On a deliberately mis-timed clip (first half hurried, second half dragged),
+correlation with the envelope went **0.02 → 0.45** and the best-match offset
+from **−130 ms to −10 ms**.
+
+The DTW is constrained to a Sakoe-Chiba band. Unconstrained, it will happily
+map a whole phrase onto one loud syllable — a perfect score and a useless
+result. And if the warp does not improve the correlation it is discarded: a bad
+alignment is worse than uniform timing.
+
+`/api/say` reports what it did as `"align": {"aligned": true, "before": …,
+"after": …}`. Turn it off with `{"align": false}`.
+
+### Check it on your own voice
+
+```bash
+python check_sync.py --tts edge --voice ja-JP-NanamiNeural
+```
+
+Synthesises several phrases, prints correlation before and after alignment, and
+the residual lag in milliseconds. Anything inside ±45 ms is below the threshold
+most people can see.
+
+One caveat on reading it: the **offline** engine scores high in the "uniform"
+column and gains little, because its audio was generated from the same mora
+model the track assumes — it agrees with itself. Run it against edge-tts or
+VOICEVOX for numbers that mean something.
+
+#### Measured baseline, real voice
+
+Recorded so a later regression is visible. Correlation with the audio envelope,
+uniform mora timing vs. after alignment:
+
+| phrase | uniform | aligned | gain | contains |
+|---|---|---|---|---|
+| しゃべってみましょう、いっしょに | 0.532 | 0.854 | +0.322 | comma, sokuon |
+| こんにちは、たぬきです | 0.639 | 0.914 | +0.275 | comma |
+| がんばってください | 0.657 | 0.904 | +0.247 | sokuon |
+| ありがとうございます | 0.814 | 0.924 | +0.110 | — |
+| きょうはいいてんきですね | 0.789 | 0.808 | +0.019 | — |
+| **mean** | **0.686** | **0.881** | **+0.194** | |
+
+Residual lag was 0 to −10 ms on every phrase — an order of magnitude inside the
+±45 ms visibility threshold, and on the early side.
+
+The gains sort cleanly by what the phrase contains. The two biggest are the
+ones with a **comma**, where the engine chooses its own pause length and the
+uniform model cannot know it. Next is the **sokuon** っ, a beat of silence whose
+real length varies. The phrase with neither was already well aligned and gained
+almost nothing — which is the result you want: the alignment does work exactly
+where the model is blind, and leaves the rest alone.
+
 ### Output latency is measured, not guessed
 
 `audio.currentTime` reports the **decoder** position. The sound still has to
@@ -167,9 +234,55 @@ canvas is transparent and nothing draws at all.
 
 **ES modules need a server.** `file://` won't load the modules or the model.
 
+**`speak()` resolves on `ended`, with a safety net.** That event is not
+guaranteed — a stalled buffer, a decode error, or a device with no audio output
+all leave it unfired. Without a fallback the promise never settles and a chat
+UI's send button stays disabled forever. There is a timer capped at the clip
+length plus two seconds.
+
 **`update()` clears every channel each frame.** Anything not re-driven settles
 to zero, so `setViseme()` is washed out on the next tick. To hold a value, use
 `setOverride('Blink', 1)` and `setOverride('Blink', null)` to release.
+
+## What moves the body
+
+The mouth is driven by the phoneme track. The **body is driven by the audio
+spectrum**, split into three bands (`src/bands.js`):
+
+| band | Hz | what it is | what it moves |
+|---|---|---|---|
+| low | 70–260 | the voiced fundamental | torso engagement, breath depth |
+| mid | 260–2200 | F1/F2, i.e. perceived loudness | lean and bob |
+| high → `hit` | 2600–7000 | frication and plosive bursts | head accents |
+
+`hit` is the **rise** of the high band, not its level — a consonant landing is
+an event, so it fires an impulse that decays over ~0.2 s. That is why nods now
+fall on the plosives instead of on a fixed sine.
+
+Each band carries a running peak that rises instantly and decays ~6 dB/s, so
+the level of the recording stops mattering: a quiet edge-tts clip and a loud
+VOICEVOX one both drive the body the same way.
+
+There is no lead applied to the bands, while the mouth is read `timeShift()`
+early — so the body trails the mouth by ~30–40 ms. That is the right way
+round: lips anticipate a sound, torsos do not.
+
+**The fallback.** With no audio graph — an external clock, a refused
+`AudioContext`, a muted tab — `BandAnalyser.synth()` manufactures bands from
+mouth openness instead, which is what the body used to run on entirely. Blunter
+(it makes the body a function of *which vowel* is being said, so the character
+leans on あ and freezes on い) but it keeps the motion in character rather than
+stopping dead.
+
+Turn it off to compare:
+
+```js
+body.bandDrive = false;         // one scalar, the old behaviour
+rig.useBands   = false;         // don't even read the spectrum
+```
+
+`player.html` has a **band drive** checkbox and three extra meters (low / mid /
+hit) so you can watch it and switch mid-sentence.
 
 ## Moving the mouth
 

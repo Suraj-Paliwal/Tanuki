@@ -14,6 +14,7 @@
  *   await tanuki.speak({ audio: '/tts/line.mp3' });         // live analysis
  */
 import { VowelTracker, VISEMES } from './formants.js';
+import { BandAnalyser } from './bands.js';
 
 const MOUTH = VISEMES;                       // A I U E O
 const ALL   = [...MOUTH, 'Blink', 'BlinkL', 'BlinkR'];
@@ -62,6 +63,20 @@ export class TanukiLipSync {
 
     // Manual trim on top of the measured value. Should not normally be needed.
     this.offset = opts.offset ?? 0.0;
+
+    // ── band energy ───────────────────────────────────────────────────────
+    // Split the audio into three bands and hand them to whatever drives the
+    // body. The mouth does NOT use these - it has the phoneme track, which is
+    // strictly better information. This is only so the body has a signal of
+    // its own instead of borrowing the mouth's.
+    //
+    // Note the bands are read at playback position, with no lead applied,
+    // while the mouth is read `timeShift()` early. So the body naturally
+    // trails the mouth by ~30-40 ms, which is the right way round: lips
+    // anticipate a sound, torsos do not.
+    this.useBands = opts.useBands ?? true;
+    this.bands = new BandAnalyser(opts.bands || {});
+    this.band = { low: 0, mid: 0, high: 0, hit: 0 };
 
     this.idleBlink = opts.idleBlink ?? true;
     this.blinkGap  = opts.blinkGap  ?? [2.2, 5.5];
@@ -208,6 +223,15 @@ export class TanukiLipSync {
       if (this.override[n] != null) this.goal[n] = clamp01(this.override[n]);
     }
 
+    // Band energy, for the body. Real spectrum when there is an audio graph;
+    // otherwise manufactured from mouth openness so the body does not change
+    // character between the two paths.
+    if (this.useBands) {
+      this.band = this.bands.ready
+        ? this.bands.update(dt)
+        : this.bands.synth(dt, this.mode === 'idle' ? 0 : mouthOpenness(this.current));
+    }
+
     for (const n of ALL) {
       const g = this.goal[n], c = this.current[n];
       const tau = g > c ? this.attack : this.release;
@@ -284,6 +308,8 @@ export class TanukiLipSync {
       this._track = normaliseTrack(track);
       this.mode = 'track';
       this._getTime = getTime;
+      // Best effort only. The mouth does not need this; the body does.
+      if (this.useBands) await this._graph(el, context);
       // A pre-generated track knows about consonants; live analysis does not.
       // Both are driven off audio.currentTime, so a stalled buffer stalls the
       // mouth too instead of drifting out of sync.
@@ -294,35 +320,81 @@ export class TanukiLipSync {
 
     if (el.readyState < 2) await once(el, 'loadeddata');
     await el.play();
+
     return new Promise((res) => {
-      const done = () => {
-        el.removeEventListener('ended', done);
+      let settled = false;
+      const cleanup = () => {
+        clearTimeout(timer);
+        el.removeEventListener('ended', finish);
+        el.removeEventListener('error', finish);
+      };
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        cleanup();
         // With an external clock the caller owns the lifecycle, so the audio
         // element ending must not silently reset the mouth to idle.
         if (!getTime) this._finish();
         res();
       };
-      el.addEventListener('ended', done);
+      el.addEventListener('ended', finish);
+      el.addEventListener('error', finish);
+      // Safety net. `ended` is not guaranteed: a stalled buffer, a decode
+      // error, or a device with no audio output all leave it unfired, and then
+      // this promise never settles - which in a chat UI means the send button
+      // stays disabled forever. Cap it at the clip's own length plus a margin.
+      const len = (el.duration && isFinite(el.duration))
+        ? el.duration
+        : (track && track.duration) || 10;
+      const timer = setTimeout(finish, (len + 2) * 1000);
     });
   }
 
+  /**
+   * Route an <audio> element through the AudioContext and hang an analyser off
+   * it. Used by BOTH paths now: live analysis needs it to find vowels, and the
+   * track path needs it for band energy.
+   *
+   * Returns false instead of throwing. That matters: once
+   * createMediaElementSource has been called on an element, that element's
+   * sound only ever reaches the speakers through the context, so if the
+   * context cannot be resumed the audio is silenced permanently. Hence the
+   * running check before touching it - a page that fails to get a running
+   * context loses the band signal, which is cosmetic, rather than the voice,
+   * which is not.
+   */
+  async _graph(el, context) {
+    try {
+      this._ctx = context || this._ctx ||
+        new (window.AudioContext || window.webkitAudioContext)();
+      if (this._ctx.state === 'suspended') await this._ctx.resume();
+      if (this._ctx.state !== 'running') return false;
+
+      let src = this._sourceNodes.get(el);
+      if (!src) {
+        // createMediaElementSource can only ever be called once per element;
+        // calling it twice throws, so the node is cached against the element.
+        src = this._ctx.createMediaElementSource(el);
+        this._sourceNodes.set(el, src);
+        src.connect(this._ctx.destination);
+      }
+      if (!this._analyser) {
+        this._analyser = this._ctx.createAnalyser();
+        this._analyser.fftSize = 2048;
+        this._buf = new Float32Array(this._analyser.fftSize);
+      }
+      src.connect(this._analyser);
+      if (!this.bands.ready) this.bands.attach(this._analyser, this._ctx.sampleRate);
+      return true;
+    } catch (e) {
+      console.warn('[tanuki-lipsync] no audio graph, bands disabled:', e.message);
+      return false;
+    }
+  }
+
   async _startLive(el, context) {
-    this._ctx = context || this._ctx || new (window.AudioContext || window.webkitAudioContext)();
-    if (this._ctx.state === 'suspended') await this._ctx.resume();
-    let src = this._sourceNodes.get(el);
-    if (!src) {
-      // createMediaElementSource can only ever be called once per element;
-      // calling it twice throws, so the node is cached against the element.
-      src = this._ctx.createMediaElementSource(el);
-      this._sourceNodes.set(el, src);
-      src.connect(this._ctx.destination);
-    }
-    if (!this._analyser) {
-      this._analyser = this._ctx.createAnalyser();
-      this._analyser.fftSize = 2048;
-      this._buf = new Float32Array(this._analyser.fftSize);
-    }
-    src.connect(this._analyser);
+    const ok = await this._graph(el, context);
+    if (!ok) throw new Error('could not open an AudioContext for live analysis');
     this._tracker = new VowelTracker();
   }
 
@@ -337,6 +409,7 @@ export class TanukiLipSync {
       this._buf = new Float32Array(this._analyser.fftSize);
     }
     src.connect(this._analyser);
+    if (!this.bands.ready) this.bands.attach(this._analyser, this._ctx.sampleRate);
     this._tracker = new VowelTracker();
     this._audio = null;
     this.mode = 'live';
@@ -357,6 +430,17 @@ export class TanukiLipSync {
 /* ------------------------------------------------------------------ */
 
 function clamp01(v) { return v < 0 ? 0 : v > 1 ? 1 : v; }
+
+/**
+ * How open the mouth is right now, 0..1, from a channel map.
+ * A and O open widest; I is a slit and must not read as a wide-open mouth.
+ * Lives here rather than in body.js so the driver and the body agree.
+ */
+export function mouthOpenness(c) {
+  if (!c) return 0;
+  return Math.min(1, (c.A ?? 0) * 1.0 + (c.O ?? 0) * 0.8 +
+                     (c.E ?? 0) * 0.5 + (c.U ?? 0) * 0.5 + (c.I ?? 0) * 0.25);
+}
 function rand(a, b) { return a + Math.random() * (b - a); }
 function once(el, ev) { return new Promise((r) => el.addEventListener(ev, r, { once: true })); }
 

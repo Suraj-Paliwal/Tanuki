@@ -219,7 +219,7 @@ def duration_of(path):
 #  the one interesting function
 # --------------------------------------------------------------------------- #
 def say(text, engine="auto", voice=None, rate="+0%", blink=True, intensity=1.0,
-        trim=True):
+        trim=True, align=True):
     kana = to_kana(text)
     name = pick_backend(engine)
     fn, ext = BACKENDS[name]
@@ -251,12 +251,26 @@ def say(text, engine="auto", voice=None, rate="+0%", blink=True, intensity=1.0,
     else:
         track = build_track(kana, total=dur, intensity=intensity,
                             blink=blink, fps=30)
+    # Take the timing from the recording rather than assuming it. The mora
+    # model gives every mora the same beat; real speech stretches phrase-final
+    # morae, compresses unstressed ones and pauses at commas for as long as the
+    # engine likes. Fitting to the clip duration only corrects the average, so
+    # the mouth still drifts inside the sentence.
+    report = None
+    if align:
+        try:
+            from align import align as align_track
+            track, report = align_track(track, path)
+        except Exception as e:
+            report = {"aligned": False, "reason": f"{type(e).__name__}: {e}"}
+
     return {
         "engine": name,
         "voice": voice,
         "kana": kana,
         "duration": dur or track["duration"],
         "speech": [round(span[0], 3), round(span[1], 3)] if span else None,
+        "align": report,
         "audio": "/media/" + os.path.basename(path),
         "track": track,
     }
@@ -341,7 +355,8 @@ class Handler(SimpleHTTPRequestHandler):
                       rate=req.get("rate", "+0%"),
                       blink=req.get("blink", True),
                       intensity=float(req.get("intensity", 1.0)),
-                      trim=req.get("trim", True))
+                      trim=req.get("trim", True),
+                      align=req.get("align", True))
         except Exception as e:
             return self._json({"error": f"{type(e).__name__}: {e}"}, 500)
         return self._json(out)
