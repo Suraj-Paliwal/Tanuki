@@ -67,6 +67,7 @@ import { ShaderPass }        from 'three/addons/postprocessing/ShaderPass.js';
 import { OutputPass }        from 'three/addons/postprocessing/OutputPass.js';
 import { TanukiLipSync }               from './src/tanuki-lipsync.js';
 import { BodyMotion }                  from './src/body.js';
+import { SpeechQueue }                 from './src/speech-queue.js';
 import { applyTextureQuality, CASShader } from './src/quality.js';
 
 const MODEL   = './model/tanuki.gltf';
@@ -159,21 +160,27 @@ async function askYourBot(userText) {
 
 /* ══ 3. speak ═══════════════════════════════════════════════════════════ */
 
-// One <audio> for the whole session. createMediaElementSource can only ever be
-// called once per element, so a fresh Audio() per line breaks live analysis.
-const audio = new Audio();
-audio.crossOrigin = 'anonymous';
+// The queue splits the reply at sentence boundaries and starts speaking the
+// first one while the rest are still being synthesised, so the wait before the
+// avatar opens its mouth depends on the first sentence rather than the whole
+// answer. It also owns its own pair of <audio> elements.
+const speech = new SpeechQueue(tanuki, {
+  api: TTS_API,
+  body: { blink: true },
+  onError: (e, chunk) => console.warn('[speech]', chunk, e.message || e),
+});
 
 async function speak(text) {
-  const res = await fetch(TTS_API, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text, blink: true }),
-  });
-  const data = await res.json();
-  if (data.error) throw new Error(data.error);
-  audio.src = data.audio;
-  await tanuki.speak({ audio, track: data.track });   // resolves when audio ends
+  await speech.say(text);
 }
+
+/* If your bot streams its reply, this is the version you want - each sentence
+   is synthesised the moment the model finishes writing it, so TTS overlaps
+   generation instead of following it:
+
+     for await (const delta of streamFromYourBot(userText)) speech.feed(delta);
+     await speech.end();
+*/
 
 /* ══ 4. chat plumbing ═══════════════════════════════════════════════════ */
 
@@ -194,6 +201,7 @@ document.getElementById('bar').onsubmit = async (e) => {
   e.preventDefault();
   const text = input.value.trim();
   if (!text || !tanuki) return;
+  speech.cancel();          // a new message supersedes whatever is still queued
   input.value = '';
   send.disabled = true;
   bubble(text, 'me');

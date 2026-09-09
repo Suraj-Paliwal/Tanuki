@@ -87,6 +87,13 @@ export class TanukiLipSync {
     // blink, so a held value cannot be washed out by the per-frame reset.
     this.override = Object.create(null);
 
+    // Bumped by every speak()/playTrack()/stop(). A line that has been
+    // superseded checks this before touching anything: when lines are queued
+    // back to back, the previous speak()'s completion (or its safety-net
+    // timer, which fires seconds later) would otherwise reset the mouth to
+    // idle in the middle of the line now playing.
+    this._gen = 0;
+
     this.mode = 'idle';                      // 'idle' | 'track' | 'live'
     this._track = null;
     this._audio = null;
@@ -154,7 +161,7 @@ export class TanukiLipSync {
       const ctx = context || this._ctx ||
         new (window.AudioContext || window.webkitAudioContext)();
       this._ctx = ctx;
-      if (ctx.state === 'suspended') await ctx.resume();
+      await resumeBounded(ctx);
       const out = typeof ctx.outputLatency === 'number' ? ctx.outputLatency : 0;
       const base = typeof ctx.baseLatency === 'number' ? ctx.baseLatency : 0;
       // outputLatency is unimplemented on some engines and reports 0; fall back
@@ -275,6 +282,7 @@ export class TanukiLipSync {
    * @param {() => number} getTime  current time in seconds
    */
   playTrack(track, getTime) {
+    this._gen++;
     this._track = normaliseTrack(track);
     this._getTime = getTime;
     this._audio = null;
@@ -291,35 +299,57 @@ export class TanukiLipSync {
    * @param {() => number} [o.getTime]  override the clock (defaults to
    *        audio.currentTime). Use it to drive the mouth from your own player,
    *        a video element, or a test harness.
+   * @param {number} [o.startAt]  where in the clip to begin, seconds. Use it to
+   *        skip an engine's leading silence; the track is in file time, so it
+   *        follows the seek without any adjustment.
    * @returns {Promise<void>} resolves when the audio ends
    */
-  async speak({ audio, track = null, context = null, getTime = null } = {}) {
+  async speak({ audio, track = null, context = null, getTime = null,
+                startAt = 0 } = {}) {
+    const gen = ++this._gen;
     const el = typeof audio === 'string' ? new Audio(audio) : audio;
     el.crossOrigin = el.crossOrigin || 'anonymous';
     this._audio = el;
     // Reusing one <audio> across lines leaves currentTime parked at the end of
     // the previous one, so the second speak() would sample the track past its
-    // last key and never move the mouth.
-    try { el.currentTime = 0; } catch (_) {}
-
-    if (this.autoLatency) await this.measureLatency(context);
+    // last key and never move the mouth. Assigning `startAt` rather than a
+    // hard 0 lets a caller position the clip first - the queue skips each
+    // engine's leading silence that way - without this line stamping over it.
+    try { if (el.currentTime !== startAt) el.currentTime = startAt; } catch (_) {}
 
     if (track) {
       this._track = normaliseTrack(track);
       this.mode = 'track';
       this._getTime = getTime;
-      // Best effort only. The mouth does not need this; the body does.
-      if (this.useBands) await this._graph(el, context);
       // A pre-generated track knows about consonants; live analysis does not.
       // Both are driven off audio.currentTime, so a stalled buffer stalls the
       // mouth too instead of drifting out of sync.
     } else {
+      // Live analysis genuinely cannot start without the graph.
       await this._startLive(el, context);
       this.mode = 'live';
     }
 
-    if (el.readyState < 2) await once(el, 'loadeddata');
-    await el.play();
+    // Do NOT wait for readyState here. Assigning currentTime above starts a
+    // seek, and a seek drops readyState back below HAVE_CURRENT_DATA - but
+    // `loadeddata` only ever fires once per resource, so waiting for it after
+    // a seek waits for an event that can never arrive. play() is happy to be
+    // called on an element that is still buffering; it starts when data lands.
+    const started = el.play();
+
+    // NOTHING above this line may wait on the AudioContext.
+    //
+    // Both of these need one, and neither is needed to make sound: the latency
+    // figure only trims the mouth by a few tens of milliseconds, and the bands
+    // only drive the body. They used to be awaited BEFORE play(), and
+    // `ctx.resume()` does not reject when it is blocked - it simply never
+    // settles - so a page that speaks before the user has clicked anything
+    // would sit there silently with the mouth shut, for ever. Measured: the
+    // first two lines of a queued reply never played at all.
+    if (this.autoLatency) this.measureLatency(context).catch(() => {});
+    if (track && this.useBands) this._graph(el, context).catch(() => {});
+
+    await started;
 
     return new Promise((res) => {
       let settled = false;
@@ -333,8 +363,9 @@ export class TanukiLipSync {
         settled = true;
         cleanup();
         // With an external clock the caller owns the lifecycle, so the audio
-        // element ending must not silently reset the mouth to idle.
-        if (!getTime) this._finish();
+        // element ending must not silently reset the mouth to idle. Nor may a
+        // superseded line reset the mouth under the one now playing.
+        if (!getTime && gen === this._gen) this._finish();
         res();
       };
       el.addEventListener('ended', finish);
@@ -367,7 +398,7 @@ export class TanukiLipSync {
     try {
       this._ctx = context || this._ctx ||
         new (window.AudioContext || window.webkitAudioContext)();
-      if (this._ctx.state === 'suspended') await this._ctx.resume();
+      await resumeBounded(this._ctx);
       if (this._ctx.state !== 'running') return false;
 
       let src = this._sourceNodes.get(el);
@@ -401,7 +432,7 @@ export class TanukiLipSync {
   /** Drive from a live stream (microphone, or a streamed TTS MediaStream). */
   async listen(stream, context = null) {
     this._ctx = context || this._ctx || new (window.AudioContext || window.webkitAudioContext)();
-    if (this._ctx.state === 'suspended') await this._ctx.resume();
+    await resumeBounded(this._ctx);
     const src = this._ctx.createMediaStreamSource(stream);
     if (!this._analyser) {
       this._analyser = this._ctx.createAnalyser();
@@ -416,6 +447,7 @@ export class TanukiLipSync {
   }
 
   stop() {
+    this._gen++;
     if (this._audio && !this._audio.paused) this._audio.pause();
     this._finish();
   }
@@ -443,6 +475,17 @@ export function mouthOpenness(c) {
 }
 function rand(a, b) { return a + Math.random() * (b - a); }
 function once(el, ev) { return new Promise((r) => el.addEventListener(ev, r, { once: true })); }
+
+/** Resume an AudioContext without ever blocking on it.
+ *  A context suspended by the autoplay policy returns a promise that stays
+ *  pending until a user gesture arrives - which may be never. */
+function resumeBounded(ctx, ms = 250) {
+  if (!ctx || ctx.state !== 'suspended') return Promise.resolve();
+  return Promise.race([
+    ctx.resume().catch(() => {}),
+    new Promise((r) => setTimeout(r, ms)),
+  ]);
+}
 
 function normaliseTrack(t) {
   const out = { duration: t.duration ?? 0, tracks: {} };

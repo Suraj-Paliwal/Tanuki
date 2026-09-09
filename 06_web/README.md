@@ -33,6 +33,7 @@ player.html           tuning bench
 model/                tanuki.gltf + .bin + 3 WebP textures (8 morph targets)
 src/
   tanuki-lipsync.js   the driver: loads the model, plays audio, moves the mouth
+  speech-queue.js     sentence-by-sentence playback — the latency fix
   body.js             breathing, weight shift, nod while speaking
   bands.js            three-band audio energy — what the body moves to
   quality.js          anisotropy + contrast-adaptive sharpening
@@ -103,6 +104,70 @@ request. Omitting `voice` or `rate` gets the engine's own default rather than a
 
 The server measures the clip and fits the mouth to its real duration. Mora
 timing alone is an estimate and drifts over a sentence.
+
+## Latency — why it starts talking sooner now
+
+The obvious way to speak a reply is one request for the whole thing. That makes
+the user wait for the entire answer to be synthesised before hearing the first
+syllable, and TTS cost scales with length, so a long reply is punished twice.
+
+`SpeechQueue` splits the reply at sentence boundaries, synthesises the first
+one alone, and starts playing it while the rest are still being made:
+
+```
+one shot   [------- synthesise whole reply -------][play ...]
+queued     [synth 1][play 1.............][play 2.......][play 3...]
+                    [synth 2][synth 3]   (overlapped, ahead of playback)
+```
+
+Measured in a real browser against this server, with synthesis modelled on
+edge-tts (0.25 s handshake + 30 ms/character), on a four-sentence reply:
+
+| | time to first sound | total |
+|---|---|---|
+| one request for the whole reply | 2.74 s | 8.96 s |
+| queued by sentence | **0.76 s** | **7.36 s** |
+| repeat (server response cache) | 0.06 s | — |
+
+It also **finishes sooner**, because the server already measures where the real
+speech starts and ends in each clip, so the queue seeks past the leading
+padding and cuts at the trailing one — two unpredictable silences replaced by
+one controlled `gap`.
+
+```js
+import { SpeechQueue } from './src/speech-queue.js';
+const speech = new SpeechQueue(tanuki, { api: '/api/say' });
+
+await speech.say(reply);       // split, pipeline, play in order
+speech.cancel();               // new user message: drop everything in flight
+```
+
+**If your bot streams**, this is the version you want — each sentence is
+synthesised the moment the model finishes writing it, so TTS overlaps
+generation instead of following it:
+
+```js
+for await (const delta of streamFromYourBot(userText)) speech.feed(delta);
+await speech.end();
+```
+
+Options: `lookahead` (default 2 chunks in flight), `gap` (0.12 s between
+sentences), `maxChars` (60, before falling back to splitting at 、),
+`timeout` (20 s per chunk), `trimPadding`, `onChunk`, `onError`. A chunk that
+fails is skipped and reported — one bad sentence never silences the rest.
+
+### Server-side cost per request
+
+| | before | after |
+|---|---|---|
+| process spawns | 3 (ffprobe + ffmpeg ×2, with temp files) | 1 (ffmpeg, streamed to stdout) |
+| non-TTS overhead | 207 ms | 101 ms |
+| a repeated line | 186 ms | ~0 ms (`"cached": true`) |
+
+The same clip used to be decoded three times — once for its duration, once for
+the silence trim, once for the alignment envelope. It is decoded once now and
+the frames are shared. The full response, not just the audio, is cached to
+`.media/<key>.resp.json`, so repeats survive a restart.
 
 ## Prefer the text path
 
