@@ -23,6 +23,7 @@ the tanuki says it.
 | `chatbot.html` | the chat avatar — this is the one you want |
 | `minimal.html` | 60 lines: load, click, speak. Read this to understand the API |
 | `player.html` | tuning bench: orbit, sharpen slider, microphone, viseme meters |
+| `selftest.html` | **timing guardrail** — open it and press Run when something feels off |
 
 ## What's in here
 
@@ -104,6 +105,37 @@ request. Omitting `voice` or `rate` gets the engine's own default rather than a
 
 The server measures the clip and fits the mouth to its real duration. Mora
 timing alone is an estimate and drifts over a sentence.
+
+## When something feels late or out of sync: run the self-test
+
+Open **http://localhost:8080/selftest.html** and press Run. It drives the real
+pipeline against your engine and measures what the ear and the eye actually
+get, so "it feels laggy" becomes a number that says which part.
+
+No 3D model is loaded, deliberately: that separates a pipeline problem from a
+frame-rate one. It reports:
+
+| it checks | it catches |
+|---|---|
+| engine turnaround for one sentence | the pause before speech being the engine, not the rig |
+| timing source (`voicevox-exact` vs estimated) | whether the mouth is on ground truth or an inference |
+| time from Send to the first syllable | the thing the user actually waits for |
+| longest silence between sentences | a queue starving because synthesis can't keep ahead |
+| queue stalls | the same, named explicitly |
+| caption vs voice offset | text printed before the audio — the loudest "lag" that isn't one |
+| mouth closes between sentences | the rig left frozen in the last shape it held |
+| **the same, with cuts forced mid-word** | the above, deterministically rather than by luck |
+| mouth shuts when the reply ends | a character sitting there with its mouth open |
+| mouth keeps moving to the end of each sentence | a viseme track running out before its audio |
+| every sentence was spoken | a failed chunk silently skipped |
+
+Thresholds come from broadcast AV-sync practice: audio may lead video by ~45 ms
+and lag it by ~125 ms before a viewer notices (ITU-R BT.1359); film mixing works
+to about ±22 ms.
+
+The mouth checks are written to fail. Removing the one line that resets the rig
+at the end of a chunk takes the stress check from `0.23 open` to `0.82 open` —
+verified, because a guardrail that cannot fail is decoration.
 
 ## Which voice engine to use
 

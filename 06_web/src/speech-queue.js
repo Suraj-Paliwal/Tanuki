@@ -52,9 +52,17 @@ export class SpeechQueue {
     this.api = opts.api ?? '/api/say';
     this.body = opts.body ?? { blink: true };   // extra fields for /api/say
 
-    // How many chunks to have synthesising ahead of the one playing. 2 keeps
-    // the pipeline full without opening a connection per sentence at once.
-    this.lookahead = opts.lookahead ?? 2;
+    // How many chunks to have synthesising ahead of the one playing.
+    //
+    // This has to beat the ratio of synthesis time to playback time. A
+    // sentence takes ~1.5 s to say; if the engine needs longer than that to
+    // make the next one, the queue starves and you hear a hole between
+    // sentences. 3 covers an engine running at up to ~3x realtime behind us;
+    // raise it for a slow remote engine, lower it if you are being rate
+    // limited. onStall fires when it was not enough, so you can see it rather
+    // than guess.
+    this.lookahead = opts.lookahead ?? 3;
+    this.onStall = opts.onStall ?? null;
     this.maxChars = opts.maxChars ?? 60;   // split long clauses at 、 too
     this.minChars = opts.minChars ?? 6;    // never emit a two-syllable clip
     // The FIRST chunk is the only one anybody waits for, so it is cut short
@@ -252,11 +260,26 @@ export class SpeechQueue {
       }
 
       const el = this._pool[slot % this._pool.length];
+      const spare = this._pool[(slot + 1) % this._pool.length];
       slot++;
+      // Hand the next clip's URL to the idle element now, so the browser
+      // fetches and decodes it during this sentence instead of at the moment
+      // it is needed.
+      const next = this._queue[0];
+      if (next && next.result && spare !== el) {
+        try { spare.src = next.result.audio; spare.load(); } catch (_) {}
+      }
+      const wasReady = !!(next && next.result);
       try {
         await this._speakOne(el, item, gen);
       } catch (e) {
         this.onError?.(e, item.text);
+      }
+      // If the next sentence still is not synthesised, the listener is about
+      // to hear a hole. Report it: that is a lookahead or an engine problem,
+      // and it is invisible otherwise.
+      if (gen === this._gen && next && !wasReady && !next.result && !next.error) {
+        this.onStall?.(next.text);
       }
       if (gen === this._gen && this._queue.length) await sleep(this.gap * 1000);
     }
@@ -294,6 +317,13 @@ export class SpeechQueue {
         el.removeEventListener('ended', finish);
         el.removeEventListener('error', finish);
         try { el.pause(); } catch (_) {}
+        // Put the rig back to rest. Without this the mouth FREEZES in
+        // whatever shape it held at the cut and stays there through the gap
+        // between sentences - measured at 0.85 open for the whole pause - and
+        // hangs open for good after the last one. The driver samples the
+        // track at audio.currentTime, and a paused element's currentTime does
+        // not move, so nothing else was ever going to close it.
+        this.tanuki.stop();
         resolve();
       };
       // Cut at the end of the actual speech instead of the end of the file.
