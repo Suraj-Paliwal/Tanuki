@@ -164,14 +164,35 @@ async function askYourBot(userText) {
 // first one while the rest are still being synthesised, so the wait before the
 // avatar opens its mouth depends on the first sentence rather than the whole
 // answer. It also owns its own pair of <audio> elements.
+// The reply is revealed sentence by sentence, as each one starts being SPOKEN.
+// Printing the whole answer the instant it arrives and then leaving a silent
+// pause before the voice catches up is the single most noticeable delay in the
+// app - the eye finishes reading before the mouth has started. Revealed in
+// step with the audio, the same wait reads as the character talking.
 const speech = new SpeechQueue(tanuki, {
   api: TTS_API,
   body: { blink: true },
-  onError: (e, chunk) => console.warn('[speech]', chunk, e.message || e),
+  onError: (e, chunk) => {
+    console.warn('[speech]', chunk, e.message || e);
+    status.textContent = 'voice failed — check the server console';
+  },
 });
 
-async function speak(text) {
-  await speech.say(text);
+/** Speak `text`, revealing it into `el` in time with the voice. */
+async function speak(text, el) {
+  let shown = '';
+  speech.onChunk = (chunk) => {
+    shown += chunk;
+    if (el) el.textContent = shown;
+    log.scrollTop = log.scrollHeight;
+  };
+  try {
+    await speech.say(text);
+  } finally {
+    speech.onChunk = null;
+    // Whatever the voice managed, the words are all there at the end.
+    if (el && shown !== text) el.textContent = text;
+  }
 }
 
 /* If your bot streams its reply, this is the version you want - each sentence
@@ -209,9 +230,9 @@ document.getElementById('bar').onsubmit = async (e) => {
   try {
     const reply = await askYourBot(text);
     pending.remove();
-    bubble(reply, 'bot');
     status.textContent = 'speaking…';
-    await speak(reply);
+    const say = bubble('', 'bot');
+    await speak(reply, say);
     status.textContent = 'ready';
   } catch (err) {
     pending.remove();

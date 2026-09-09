@@ -111,6 +111,16 @@ def tts_voicevox(text, path, voice=VOICEVOX_SPEAKER, **kw):
         headers={"Content-Type": "application/json"})
     with open(path, "wb") as f:
         f.write(urllib.request.urlopen(r, timeout=60).read())
+    # Keep the query. It is not metadata - it is the exact plan the engine just
+    # synthesised, mora by mora, with the duration of every consonant and
+    # vowel. Estimating the timing and then warping it onto the audio is what
+    # you do when you cannot have this.
+    try:
+        with open(os.path.splitext(path)[0] + ".query.json", "w",
+                  encoding="utf-8") as f:
+            json.dump(query, f, ensure_ascii=False)
+    except OSError:
+        pass
     return "wav"
 
 def tts_edge(text, path, voice=EDGE_VOICE, rate=DEFAULT_RATE, **kw):
@@ -206,6 +216,18 @@ def shift_track(track, dt):
         if dt > 0:
             keys.insert(0, [0.0, 0.0])
     return track
+
+
+def wav_duration(path):
+    """Duration straight from the WAV header - no process, no decode."""
+    if not path.lower().endswith(".wav"):
+        return None
+    try:
+        import wave
+        with wave.open(path) as w:
+            return w.getnframes() / float(w.getframerate())
+    except Exception:
+        return None
 
 
 def analyse(path):
@@ -388,6 +410,48 @@ def say(text, engine="auto", voice=None, rate=DEFAULT_RATE, blink=True,
             if cand == chain[-1]:
                 raise
 
+    # ── exact timing, when the engine will tell us ────────────────────────
+    # VOICEVOX hands back the phoneme durations it used. Believe them only
+    # after checking their total against the audio that actually came out -
+    # the units are not documented, and an assumption that silently drifts is
+    # worse than the estimate it replaced.
+    #
+    # This runs BEFORE the decode, because when it succeeds there is nothing
+    # left to measure: no ffmpeg, no envelope, no DTW. A VOICEVOX request costs
+    # a WAV header read and a dictionary walk.
+    qf = os.path.splitext(path)[0] + ".query.json"
+    if os.path.exists(qf):
+        try:
+            from vv_timing import track_from_query, kana_of
+            with open(qf, encoding="utf-8") as f:
+                query = json.load(f)
+            wdur = wav_duration(path)
+            exact, total = track_from_query(query, intensity=intensity,
+                                            blink=blink, fps=30)
+            if exact and wdur and abs(total - wdur) <= 0.2 * wdur:
+                exact["duration"] = round(wdur, 4)
+                pre = float(query.get("prePhonemeLength") or 0.0)
+                post = float(query.get("postPhonemeLength") or 0.0)
+                out = {
+                    "engine": name, "cached": False,
+                    "fallback_from": fell_back if isinstance(fell_back, dict) else None,
+                    "voice": voice, "kana": kana_of(query) or kana,
+                    "duration": round(wdur, 4), "timing": "voicevox-exact",
+                    # the engine states its own padding, so no analysis needed
+                    "speech": [round(pre, 3), round(max(wdur - post, pre + 0.05), 3)],
+                    "align": {"aligned": False,
+                              "reason": "not needed: exact phoneme timing"},
+                    "audio": "/media/" + os.path.basename(path),
+                    "track": exact,
+                }
+                _cache_put(ck, out)
+                return out
+            sys.stderr.write(
+                f"  [timing] voicevox durations sum to {total:.2f}s but the "
+                f"clip is {wdur}s - falling back to estimated timing\n")
+        except Exception as e:
+            sys.stderr.write(f"  [timing] voicevox query unusable: {e}\n")
+
     # ONE decode, shared by the duration, the silence trim and the alignment.
     dur, db, n_samples = analyse(path)
 
@@ -423,6 +487,7 @@ def say(text, engine="auto", voice=None, rate=DEFAULT_RATE, blink=True,
     out = {
         "engine": name,
         "cached": False,
+        "timing": "estimated+aligned" if (report or {}).get("aligned") else "estimated",
         "fallback_from": fell_back if isinstance(fell_back, dict) else None,
         "voice": voice,
         "kana": kana,

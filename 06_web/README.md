@@ -105,6 +105,50 @@ request. Omitting `voice` or `rate` gets the engine's own default rather than a
 The server measures the clip and fits the mouth to its real duration. Mora
 timing alone is an estimate and drifts over a sentence.
 
+## Which voice engine to use
+
+All four are free. They are not equally good, and the differences matter more
+than the voice quality:
+
+| | cost | where it runs | deploys as | lip-sync timing |
+|---|---|---|---|---|
+| **VOICEVOX** | free | your machine / your server | Docker image | **exact — from the engine** |
+| edge-tts | free | Microsoft's servers | can't | estimated, then aligned |
+| gTTS | free | Google's servers | can't | estimated, then aligned |
+| offline | free | in-process | anywhere | estimated, then aligned |
+
+**Use VOICEVOX.** Three reasons, in order of how much they matter:
+
+1. **It tells you the timing.** `/audio_query` returns the exact plan it is
+   about to synthesise — every mora, its consonant and vowel, and how long each
+   will last. The mouth is then driven by the same numbers that generated the
+   sound, instead of a uniform-beat estimate warped onto the audio afterwards.
+   It even marks devoiced vowels in upper case (the /u/ of です comes back as
+   `U`), which is a distinction the text-only path has to infer.
+2. **No network round trip**, so it is the fastest of the four by a wide margin
+   and the latency does not depend on anyone else's servers.
+3. **It is deployable.** edge-tts and gTTS talk to endpoints that are not
+   public APIs — fine on your laptop, not something to build a product on.
+   VOICEVOX ships an engine you run yourself:
+
+   ```bash
+   docker run --rm -p 50021:50021 voicevox/voicevox_engine:cpu-latest
+   ```
+
+   The server finds it on `:50021` automatically — nothing to configure. Set
+   `VOICEVOX_URL` to point elsewhere. Scaling is ordinary container scaling.
+
+When VOICEVOX answers, the response says `"timing": "voicevox-exact"` and skips
+the alignment pass entirely. The durations are checked against the audio that
+actually came out first; if they disagree by more than 20% the server logs it
+and falls back to the estimating path, so a version change can never silently
+desync the mouth.
+
+One licence note: VOICEVOX is free for commercial and non-commercial use, but
+each voice requires **credit** in the form `VOICEVOX:キャラクター名`, and some
+characters carry extra conditions. Check the terms for the specific speaker id
+you ship.
+
 ## Latency — why it starts talking sooner now
 
 The obvious way to speak a reply is one request for the whole thing. That makes
@@ -133,6 +177,27 @@ It also **finishes sooner**, because the server already measures where the real
 speech starts and ends in each clip, so the queue seeks past the leading
 padding and cuts at the trailing one — two unpredictable silences replaced by
 one controlled `gap`.
+
+The **first** chunk is cut short (18 characters, and allowed to break at a
+comma) because it is the only one anyone waits for. Later chunks are longer:
+they are already being synthesised behind the one playing, so length costs
+nothing there, and more text gives the engine better intonation.
+
+### Reveal the text with the voice, not before it
+
+The biggest *felt* delay is not always a real one. Printing the whole reply the
+instant it arrives and then pausing before the voice catches up makes the eye
+finish reading before the mouth has started — which reads as the avatar being
+slow even when it is not. `chatbot.html` reveals each sentence as it begins
+being spoken:
+
+```js
+speech.onChunk = (chunk) => { bubble.textContent += chunk; };
+await speech.say(reply);
+```
+
+A sentence whose audio failed is still revealed, so words go missing from the
+sound and never from the conversation.
 
 ```js
 import { SpeechQueue } from './src/speech-queue.js';

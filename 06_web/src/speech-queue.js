@@ -57,6 +57,12 @@ export class SpeechQueue {
     this.lookahead = opts.lookahead ?? 2;
     this.maxChars = opts.maxChars ?? 60;   // split long clauses at 、 too
     this.minChars = opts.minChars ?? 6;    // never emit a two-syllable clip
+    // The FIRST chunk is the only one anybody waits for, so it is cut short
+    // and allowed to break at a comma. Every later chunk is already being
+    // synthesised behind the one playing, so length costs nothing there and
+    // longer chunks give the engine more context for its intonation.
+    this.firstMaxChars = opts.firstMaxChars ?? 18;
+    this.firstMinChars = opts.firstMinChars ?? 4;
     this.gap = opts.gap ?? 0.12;           // seconds between sentences
     this.preroll = opts.preroll ?? 0.05;   // keep this much silence before speech
     this.tail = opts.tail ?? 0.06;         // ...and after it
@@ -75,6 +81,7 @@ export class SpeechQueue {
     this._pending = '';        // text fed but not yet closed by punctuation
     this._queue = [];          // {text, promise, result, error}
     this._playing = false;
+    this._emitted = 0;         // chunks handed to the queue so far
     this._done = null;         // resolve when the queue drains
     this._gen = 0;             // bumped by cancel(); stale work checks it
     this._warmed = false;
@@ -107,7 +114,7 @@ export class SpeechQueue {
     this._warm();
     this._pending += delta;
     for (;;) {
-      const cut = this._nextCut(this._pending, false);
+      const cut = this._nextCut(this._pending);
       if (cut <= 0) break;
       this._enqueue(this._pending.slice(0, cut));
       this._pending = this._pending.slice(cut);
@@ -133,6 +140,7 @@ export class SpeechQueue {
     for (const item of this._queue) item.ctrl?.abort();
     this._queue.length = 0;
     this._pending = '';
+    this._emitted = 0;
     for (const el of this._pool) { try { el.pause(); } catch (_) {} }
     this.tanuki.stop();
     this._playing = false;
@@ -151,27 +159,33 @@ export class SpeechQueue {
    * back to a comma - splitting every clause makes the delivery choppy,
    * because the engine gives each clip its own phrase-final intonation.
    */
-  _nextCut(s, force) {
+  _nextCut(s) {
+    const first = this._emitted === 0;
+    const enders = first ? ENDERS + '、,' : ENDERS;
+    const min = first ? this.firstMinChars : this.minChars;
+    const max = first ? this.firstMaxChars : this.maxChars;
+
     for (let i = 0; i < s.length; i++) {
-      if (ENDERS.includes(s[i])) {
+      if (enders.includes(s[i])) {
         // include any run of closing punctuation/quotes
         let j = i + 1;
         while (j < s.length && '」』）)”"…・、 '.includes(s[j])) j++;
-        if (j >= this.minChars) return j;
+        if (j >= min) return j;
       }
     }
-    if (s.length > this.maxChars) {
-      const at = s.lastIndexOf('、', this.maxChars);
-      if (at >= this.minChars) return at + 1;
-      return this.maxChars;                 // no punctuation at all: hard cut
+    if (s.length > max) {
+      const at = s.lastIndexOf('、', max);
+      if (at >= min) return at + 1;
+      return max;                           // no punctuation at all: hard cut
     }
-    return force && s.trim() ? s.length : 0;
+    return 0;
   }
 
   _enqueue(text) {
     text = text.trim();
     if (!text) return;
     this._queue.push({ text, result: null, error: null, ctrl: null, promise: null });
+    this._emitted++;
   }
 
   /** Keep `lookahead` requests in flight, and start playback if idle. */
@@ -229,7 +243,13 @@ export class SpeechQueue {
       if (gen !== this._gen) break;
       this._queue.shift();
       this._pump();                       // keep the pipeline full while we play
-      if (item.error) continue;           // skipped: already reported
+      if (item.error) {
+        // The audio is lost, but the words are not: still surface the text so
+        // a failed sentence goes missing from the SOUND and not from the
+        // conversation.
+        this.onChunk?.(item.text, null);
+        continue;
+      }
 
       const el = this._pool[slot % this._pool.length];
       slot++;
