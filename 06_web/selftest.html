@@ -50,6 +50,51 @@ so a failure here is a pipeline problem, not a frame-rate one.</div>
 <div id="sum" hidden></div>
 </div>
 
+<style>#__boot[hidden]{display:none!important}</style>
+<div id="__boot" hidden style="position:fixed;inset:0;z-index:9999;display:flex;
+     align-items:center;justify-content:center;background:#0d0f14;color:#e6e9ef;
+     font:14px/1.7 ui-sans-serif,system-ui,-apple-system,sans-serif;padding:30px">
+  <div style="max-width:560px">
+    <div style="font-size:17px;font-weight:600;margin-bottom:10px" id="__bootH"></div>
+    <div id="__bootB" style="color:#8b95a7"></div>
+  </div>
+</div>
+<script>
+/* Boot guard. Without it, the two ways this page usually fails - opened as a
+   file instead of through the server, or a module that threw while loading -
+   both look identical from the outside: a page that renders and then does
+   nothing at all when you click. */
+(function () {
+  var errs = [];
+  window.addEventListener('error', function (e) {
+    errs.push(e.message || String(e.error || 'script error'));
+  });
+  function show(head, body) {
+    var el = document.getElementById('__boot');
+    document.getElementById('__bootH').textContent = head;
+    document.getElementById('__bootB').innerHTML = body;
+    el.hidden = false;
+  }
+  setTimeout(function () {
+    if (window.__booted) return;
+    if (location.protocol === 'file:') {
+      show('This page has to be served by the server.',
+        'You opened it straight from the folder, so the browser blocks its '
+        + 'modules and every request to <code>/api/say</code> goes nowhere.'
+        + '<br><br>Run <code>python tanuki_tts_server.py</code> in the '
+        + '<code>06_web</code> folder, then open '
+        + '<b>http://localhost:8080/' + location.pathname.split('/').pop() + '</b>');
+    } else {
+      show('The page loaded but its script did not run.',
+        (errs.length ? '<code>' + errs.join('<br>') + '</code><br><br>' : '')
+        + 'Most often the server is still running an older copy of the code: '
+        + 'stop it with Ctrl+C and start it again. Otherwise open the browser '
+        + 'console (F12) - the first red line names the file.');
+    }
+  }, 2500);
+})();
+</script>
+
 <script type="module">
 import { TanukiLipSync } from './src/tanuki-lipsync.js';
 import { SpeechQueue }   from './src/speech-queue.js';
@@ -124,6 +169,25 @@ async function run(TEXT) {
       `${synth.toFixed(0)} ms`,
       'Everything else is overlapped behind this, so it sets how long the first '
       + 'syllable takes. Over ~2 s and the pause before speech is the engine, not the rig.');
+
+  // Split that cost into the part you pay per REQUEST and the part you pay per
+  // CHARACTER. It decides what to do about it: a large fixed cost cannot be
+  // shortened by sending less text, and means the engine itself has to change.
+  const longer = (TEXT + TEXT).slice(0, 70) + '​'.repeat(1 + (Date.now() % 7));
+  const tB = performance.now();
+  await post({ text: longer });
+  const synth2 = performance.now() - tB;
+  const perChar = Math.max((synth2 - synth) / Math.max(longer.length - uniq.length, 1), 0);
+  const fixed = Math.max(synth - perChar * uniq.length, 0);
+  row(judge(fixed, 500, 1200), 'fixed cost per request (handshake, round trip)',
+      `${fixed.toFixed(0)} ms`,
+      fixed > 1200
+        ? 'This is paid on every sentence no matter how short. Cutting the first '
+          + 'sentence shorter cannot help — only a local engine removes it.'
+        : 'Small enough that shortening the first sentence buys you something.');
+  row('INFO', 'marginal cost per character', `${perChar.toFixed(1)} ms/char`,
+      `A ${uniq.length}-char sentence therefore costs about `
+      + `${(fixed + perChar * uniq.length).toFixed(0)} ms.`);
   row('INFO', 'timing source', one.timing || 'unknown',
       one.timing === 'voicevox-exact'
         ? 'Driven by the engine’s own mora durations. This is ground truth.'
@@ -310,4 +374,6 @@ async function post(body) {
   if (d.error) throw new Error(d.error);
   return d;
 }
+
+window.__booted = true;
 </script>

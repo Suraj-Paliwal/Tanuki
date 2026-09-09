@@ -304,7 +304,6 @@ export class SpeechQueue {
     const start = span ? Math.max(0, span[0] - this.preroll) : 0;
     const stop = span ? Math.min(d.duration || 1e9, span[1] + this.tail) : Infinity;
 
-    this.onChunk?.(item.text, d);
     el.src = d.audio;
 
     return new Promise((resolve) => {
@@ -314,6 +313,9 @@ export class SpeechQueue {
         settled = true;
         clearInterval(watch);
         clearTimeout(guard);
+        clearTimeout(revealGuard);
+        el.removeEventListener('playing', reveal);
+        reveal();                       // never lose a sentence's text
         el.removeEventListener('ended', finish);
         el.removeEventListener('error', finish);
         try { el.pause(); } catch (_) {}
@@ -327,6 +329,21 @@ export class SpeechQueue {
         resolve();
       };
       // Cut at the end of the actual speech instead of the end of the file.
+      // Reveal the caption when the sound ACTUALLY starts, not when we begin
+      // loading the clip. The element still has to fetch and decode, and on
+      // the first sentence that was putting the text on screen up to ~290 ms
+      // ahead of the voice - small, but it is exactly the mismatch that reads
+      // as the avatar lagging.
+      let revealed = false;
+      const reveal = () => {
+        if (revealed) return;
+        revealed = true;
+        this.onChunk?.(item.text, d);
+      };
+      el.addEventListener('playing', reveal, { once: true });
+      // ...unless playback never begins, in which case the words still go up.
+      const revealGuard = setTimeout(reveal, 1200);
+
       const watch = setInterval(() => {
         if (gen !== this._gen) return finish();
         if (el.currentTime >= stop) finish();

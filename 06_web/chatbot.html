@@ -57,6 +57,51 @@
     "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/"
 } }
 </script>
+<style>#__boot[hidden]{display:none!important}</style>
+<div id="__boot" hidden style="position:fixed;inset:0;z-index:9999;display:flex;
+     align-items:center;justify-content:center;background:#0d0f14;color:#e6e9ef;
+     font:14px/1.7 ui-sans-serif,system-ui,-apple-system,sans-serif;padding:30px">
+  <div style="max-width:560px">
+    <div style="font-size:17px;font-weight:600;margin-bottom:10px" id="__bootH"></div>
+    <div id="__bootB" style="color:#8b95a7"></div>
+  </div>
+</div>
+<script>
+/* Boot guard. Without it, the two ways this page usually fails - opened as a
+   file instead of through the server, or a module that threw while loading -
+   both look identical from the outside: a page that renders and then does
+   nothing at all when you click. */
+(function () {
+  var errs = [];
+  window.addEventListener('error', function (e) {
+    errs.push(e.message || String(e.error || 'script error'));
+  });
+  function show(head, body) {
+    var el = document.getElementById('__boot');
+    document.getElementById('__bootH').textContent = head;
+    document.getElementById('__bootB').innerHTML = body;
+    el.hidden = false;
+  }
+  setTimeout(function () {
+    if (window.__booted) return;
+    if (location.protocol === 'file:') {
+      show('This page has to be served by the server.',
+        'You opened it straight from the folder, so the browser blocks its '
+        + 'modules and every request to <code>/api/say</code> goes nowhere.'
+        + '<br><br>Run <code>python tanuki_tts_server.py</code> in the '
+        + '<code>06_web</code> folder, then open '
+        + '<b>http://localhost:8080/' + location.pathname.split('/').pop() + '</b>');
+    } else {
+      show('The page loaded but its script did not run.',
+        (errs.length ? '<code>' + errs.join('<br>') + '</code><br><br>' : '')
+        + 'Most often the server is still running an older copy of the code: '
+        + 'stop it with Ctrl+C and start it again. Otherwise open the browser '
+        + 'console (F12) - the first red line names the file.');
+    }
+  }, 2500);
+})();
+</script>
+
 <script type="module">
 import * as THREE from 'three';
 import { GLTFLoader }        from 'three/addons/loaders/GLTFLoader.js';
@@ -247,4 +292,6 @@ document.getElementById('bar').onsubmit = async (e) => {
 bubble('こんにちは！なにか話しかけてください。', 'bot');
 input.focus();
 window.__ready = true; window.__rig = tanuki; window.__rigGroup = rig; window.__body = body;
+
+window.__booted = true;
 </script>
