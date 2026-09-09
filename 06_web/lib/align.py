@@ -21,18 +21,34 @@ import numpy as np
 FRAME, HOP = 0.025, 0.010
 
 
-def envelope(path, sr=16000):
-    """Speech energy over time, normalised to 0..1 at `HOP` resolution."""
-    from audio_lipsync import decode
-    x = decode(path, sr)
+def frame_db(x, sr=16000):
+    """Per-frame energy in dB, relative to the loudest frame.
+
+    This is the one measurement the server needs from the audio, and both
+    things that consume it - the silence trim and the alignment - want exactly
+    the same frames. Computing it once and passing the array around removes a
+    whole decode + analysis pass per request.
+    """
     n_win, n_hop = int(FRAME * sr), int(HOP * sr)
     if len(x) < n_win:
         return np.zeros(1)
-    rms = np.array([np.sqrt(np.mean(x[i:i + n_win] ** 2)) + 1e-12
-                    for i in range(0, len(x) - n_win, n_hop)])
-    db = 20 * np.log10(rms / max(rms.max(), 1e-12))
-    e = np.clip((db + 45.0) / 45.0, 0, 1)          # -45 dB floor
-    return e
+    # sliding window instead of a Python loop over frames
+    win = np.lib.stride_tricks.sliding_window_view(x, n_win)[::n_hop]
+    rms = np.sqrt((win * win).mean(axis=1)) + 1e-12
+    return 20 * np.log10(rms / max(rms.max(), 1e-12))
+
+
+def envelope_from_db(db):
+    """dB -> 0..1 with a -45 dB floor."""
+    return np.clip((db + 45.0) / 45.0, 0, 1)
+
+
+def envelope(path, sr=16000, x=None):
+    """Speech energy over time, normalised to 0..1 at `HOP` resolution."""
+    if x is None:
+        from audio_lipsync import decode
+        x = decode(path, sr)
+    return envelope_from_db(frame_db(x, sr))
 
 
 def predicted(track, n_frames):
@@ -81,7 +97,8 @@ def _dtw_path(a, b, band=0.25):
     return path[::-1]
 
 
-def align(track, audio_path, band=0.25, strength=1.0, min_corr=0.15):
+def align(track, audio_path=None, band=0.25, strength=1.0, min_corr=0.15,
+          env=None):
     """Retime `track` onto the rhythm of `audio_path`.
 
     `strength` blends between the original timing (0) and the warped one (1).
@@ -90,7 +107,12 @@ def align(track, audio_path, band=0.25, strength=1.0, min_corr=0.15):
     reasons like a voice that whispers a whole clause.
     Returns (track, report).
     """
-    env = envelope(audio_path)
+    if env is None:
+        env = envelope(audio_path)
+    # Nothing meaningful to warp in a very short clip, and DTW is the most
+    # expensive step here - skip it rather than spend 50 ms proving it.
+    if len(env) < 40:
+        return track, {"aligned": False, "reason": "clip too short to align"}
     pred = predicted(track, len(env))
     if env.std() < 1e-6 or pred.std() < 1e-6:
         return track, {"aligned": False, "reason": "flat signal"}

@@ -4,6 +4,10 @@ Everything the avatar needs is in this folder: the model, its textures, the
 JavaScript, the Japanese lip-sync pipeline and a voice server. Copy the whole
 folder into a project and it works.
 
+This file is about *using* it. For how it was built and why —
+[`../TEACH.md`](../TEACH.md) is the full walkthrough, [`../GUIDE.md`](../GUIDE.md)
+the short reference.
+
 ## Run it
 
 ```bash
@@ -79,8 +83,23 @@ POST /api/say  {"text": "こんにちは、たぬきです", "blink": true}
 ```
 
 Voice engines are tried in order — VOICEVOX on :50021, then edge-tts, then
-gTTS, then an offline formant synth that always works. The server prints which
-one it picked. Force one with `--tts edge --voice ja-JP-NanamiNeural`.
+gTTS, then an offline formant synth that needs nothing but numpy. The server
+prints which one it picked. Force one with `--tts edge --voice ja-JP-NanamiNeural`.
+
+On `--tts auto`, an engine that *throws* (no network, a 403 from the voice
+service, a bad voice name) drops to the next one instead of failing the reply,
+and the response says so:
+
+```json
+"fallback_from": { "from": "edge", "error": "RuntimeError: 403 …" }
+```
+
+An explicit `--tts` choice is never substituted — if you asked for that engine
+you want its error, not a quiet downgrade.
+
+**Voice defaults.** Every field is optional: `{"text": "…"}` is a complete
+request. Omitting `voice` or `rate` gets the engine's own default rather than a
+`None`, which is what used to reach edge-tts as `TypeError: voice must be str`.
 
 The server measures the clip and fits the mouth to its real duration. Mora
 timing alone is an estimate and drifts over a sentence.

@@ -91,8 +91,16 @@ def _have_voicevox():
     except Exception:
         return False
 
-def tts_voicevox(text, path, voice="1", **kw):
-    speaker = str(voice or "1")
+# Per-engine default voices. These live here, not only in the signatures
+# below, because a default argument does NOT apply when the caller passes the
+# parameter explicitly as None - and that is exactly what happens when a page
+# posts no "voice" field. Every backend coerces instead of relying on defaults.
+VOICEVOX_SPEAKER = "1"
+EDGE_VOICE       = "ja-JP-NanamiNeural"
+DEFAULT_RATE     = "+0%"
+
+def tts_voicevox(text, path, voice=VOICEVOX_SPEAKER, **kw):
+    speaker = str(voice or VOICEVOX_SPEAKER)
     q = urllib.request.Request(
         f"{VOICEVOX_URL}/audio_query?speaker={speaker}&text={urllib.parse.quote(text)}",
         method="POST")
@@ -105,8 +113,14 @@ def tts_voicevox(text, path, voice="1", **kw):
         f.write(urllib.request.urlopen(r, timeout=60).read())
     return "wav"
 
-def tts_edge(text, path, voice="ja-JP-NanamiNeural", rate="+0%", **kw):
+def tts_edge(text, path, voice=EDGE_VOICE, rate=DEFAULT_RATE, **kw):
     import asyncio, edge_tts
+    # edge_tts type-checks both of these and raises "TypeError: voice must be
+    # str" on None. chatbot.html posts {text, blink} and no voice, so the
+    # server filled it with its own default of None and handed that straight
+    # through - the default in the signature above never got a chance.
+    voice = voice or EDGE_VOICE
+    rate = rate or DEFAULT_RATE
     async def go():
         await edge_tts.Communicate(text, voice, rate=rate).save(path)
     asyncio.run(go())
@@ -152,7 +166,7 @@ def pick_backend(pref="auto"):
 # --------------------------------------------------------------------------- #
 #  duration
 # --------------------------------------------------------------------------- #
-def speech_span(path, floor_db=-40.0, pad=0.03):
+def speech_span(path=None, floor_db=-40.0, pad=0.03, db=None, n_samples=None):
     """Where the speech actually starts and ends inside the clip.
 
     Every TTS engine pads its output with silence - typically 150-300 ms at the
@@ -164,21 +178,21 @@ def speech_span(path, floor_db=-40.0, pad=0.03):
     Returns (start, end) in seconds, or None if the analysis is unavailable.
     """
     try:
-        from audio_lipsync import decode
         import numpy as np
-        x = decode(path)
+        from align import frame_db
         sr = 16000
-        n_win, n_hop = int(0.025 * sr), int(0.010 * sr)
-        if len(x) < n_win:
+        if db is None:
+            from audio_lipsync import decode
+            x = decode(path)
+            db = frame_db(x, sr)
+            n_samples = len(x)
+        if n_samples is None or len(db) < 2:
             return None
-        rms = np.array([np.sqrt(np.mean(x[i:i+n_win] ** 2)) + 1e-12
-                        for i in range(0, len(x) - n_win, n_hop)])
-        db = 20 * np.log10(rms / max(rms.max(), 1e-12))
         on = np.nonzero(db > floor_db)[0]
         if len(on) < 2:
             return None
         t0 = max(0.0, on[0] * 0.010 - pad)
-        t1 = min(len(x) / sr, on[-1] * 0.010 + 0.025 + pad)
+        t1 = min(n_samples / sr, on[-1] * 0.010 + 0.025 + pad)
         return (float(t0), float(t1)) if t1 - t0 > 0.05 else None
     except Exception:
         return None
@@ -192,6 +206,28 @@ def shift_track(track, dt):
         if dt > 0:
             keys.insert(0, [0.0, 0.0])
     return track
+
+
+def analyse(path):
+    """Decode the clip ONCE and return everything downstream needs.
+
+    Before this, a single request decoded the same file three times through
+    three separate processes: ffprobe for the duration, ffmpeg for the silence
+    trim, ffmpeg again for the alignment envelope. Measured at ~145 ms of pure
+    process-spawn and re-decode per request on Linux, and worse on Windows
+    where creating a process costs more.
+
+    Returns (duration_seconds, frame_db_array, sample_count) or (None,)*3.
+    """
+    try:
+        from audio_lipsync import decode
+        from align import frame_db
+        x = decode(path)                     # 16 kHz mono
+        if len(x) < 8:
+            return None, None, None
+        return len(x) / 16000.0, frame_db(x, 16000), len(x)
+    except Exception:
+        return duration_of(path), None, None
 
 
 def duration_of(path):
@@ -218,30 +254,147 @@ def duration_of(path):
 # --------------------------------------------------------------------------- #
 #  the one interesting function
 # --------------------------------------------------------------------------- #
-def say(text, engine="auto", voice=None, rate="+0%", blink=True, intensity=1.0,
-        trim=True, align=True):
-    kana = to_kana(text)
-    name = pick_backend(engine)
+FALLBACK_ORDER = ["voicevox", "edge", "gtts", "offline"]
+
+def _synthesise(name, text, kana, voice, rate):
+    """Run one backend and return the path it wrote. Raises on failure."""
     fn, ext = BACKENDS[name]
     key = hashlib.sha1(f"{name}|{voice}|{rate}|{text}".encode()).hexdigest()[:16]
     path = os.path.join(MEDIA, f"{key}.{ext}")
-
-    if not os.path.exists(path) or os.path.getsize(path) == 0:
-        # Real engines read kanji and pick the right readings themselves, so
-        # they get the original text. The offline formant synth only knows
-        # kana - hand it the converted string or it silently skips the kanji
-        # and produces a clip far shorter than the sentence.
-        spoken = kana if name == "offline" else text
+    if os.path.exists(path) and os.path.getsize(path) > 0:
+        return path
+    # Real engines read kanji and pick the right readings themselves, so they
+    # get the original text. The offline formant synth only knows kana - hand
+    # it the converted string or it silently skips the kanji and produces a
+    # clip far shorter than the sentence.
+    spoken = kana if name == "offline" else text
+    try:
         got = fn(spoken, path, voice=voice, rate=rate)
-        if got != ext:
-            os.rename(path, os.path.join(MEDIA, f"{key}.{got}"))
-            path = os.path.join(MEDIA, f"{key}.{got}")
+    except Exception:
+        # A backend that died halfway can leave a truncated file behind, and
+        # the size check above would then serve that corpse forever.
+        for f in (path,) + tuple(os.path.join(MEDIA, f"{key}.{e}")
+                                 for _, e in BACKENDS.values()):
+            try:
+                if os.path.exists(f) and os.path.getsize(f) < 512:
+                    os.remove(f)
+            except OSError:
+                pass
+        raise
+    if got != ext:
+        newp = os.path.join(MEDIA, f"{key}.{got}")
+        os.rename(path, newp)
+        path = newp
+    return path
 
-    dur = duration_of(path)
+
+def _chain(name, engine):
+    """Which backends to try, in order. An explicit --tts choice is honoured
+    exactly; only "auto" is allowed to fall back."""
+    if engine != "auto":
+        return [name]
+    out = [name]
+    for n in FALLBACK_ORDER:
+        if n == name:
+            continue
+        # Don't queue voicevox unless it is actually up - its HTTP timeout is
+        # 30 s, which would turn every fallback into a half-minute stall.
+        if n == "voicevox" and not _have_voicevox():
+            continue
+        out.append(n)
+    return out
+
+
+_RESP_CACHE = {}                       # key -> serialised response
+_RESP_LOCK = threading.Lock()
+
+def _resp_key(text, engine, voice, rate, blink, intensity, trim, align):
+    raw = f"{engine}|{voice}|{rate}|{blink}|{intensity}|{trim}|{align}|{text}"
+    return hashlib.sha1(raw.encode()).hexdigest()[:16]
+
+
+def _cache_get(key):
+    """A repeated line should cost nothing.
+
+    The audio file was already cached, but everything downstream of it -
+    probing, decoding, building the track, the DTW pass - was redone on every
+    request, so saying the same greeting twice cost the same as the first time.
+    """
+    with _RESP_LOCK:
+        hit = _RESP_CACHE.get(key)
+    if hit is None:
+        f = os.path.join(MEDIA, key + ".resp.json")
+        if not os.path.exists(f):
+            return None
+        try:
+            hit = open(f, encoding="utf-8").read()
+        except OSError:
+            return None
+        with _RESP_LOCK:
+            _RESP_CACHE[key] = hit
+    try:
+        out = json.loads(hit)               # fresh copy: callers may mutate
+    except ValueError:
+        return None
+    # the audio may have been cleared out from under us
+    name = os.path.basename(out.get("audio", ""))
+    if not name or not os.path.exists(os.path.join(MEDIA, name)):
+        return None
+    out["cached"] = True
+    return out
+
+
+def _cache_put(key, out):
+    blob = json.dumps(out, ensure_ascii=False)
+    with _RESP_LOCK:
+        _RESP_CACHE[key] = blob
+    try:
+        with open(os.path.join(MEDIA, key + ".resp.json"), "w",
+                  encoding="utf-8") as f:
+            f.write(blob)                   # survives a server restart too
+    except OSError:
+        pass
+
+
+def say(text, engine="auto", voice=None, rate=DEFAULT_RATE, blink=True,
+        intensity=1.0, trim=True, align=True):
+    rate = rate or DEFAULT_RATE
+    ck = _resp_key(text, engine, voice, rate, blink, intensity, trim, align)
+    hit = _cache_get(ck)
+    if hit is not None:
+        return hit
+
+    kana = to_kana(text)
+    name = pick_backend(engine)
+
+    # If the chosen engine throws - no network, a bad voice name, an upstream
+    # 403 - drop to the next one rather than failing the whole reply. `offline`
+    # needs nothing at all, so this chain always terminates in a voice. The
+    # failure is reported back in `fallback_from`, not swallowed.
+    chain = _chain(name, engine)
+    path, fell_back = None, None
+    for i, cand in enumerate(chain):
+        try:
+            path = _synthesise(cand, text, kana, voice, rate)
+            if i:
+                fell_back = {"from": name, "error": fell_back}
+                name = cand
+            break
+        except Exception as e:
+            err = f"{type(e).__name__}: {e}"
+            sys.stderr.write(f"  [tts] {cand} failed: {err}\n")
+            if i == 0:
+                fell_back = err
+            if cand == chain[-1]:
+                raise
+
+    # ONE decode, shared by the duration, the silence trim and the alignment.
+    dur, db, n_samples = analyse(path)
+
     # Fit the mouth to the SPEECH, not to the file. Mora timing alone is an
     # estimate; fitting it to a clip that is part silence is worse than not
     # fitting it at all.
-    span = speech_span(path) if trim else None
+    span = speech_span(db=db, n_samples=n_samples) if (trim and db is not None) else None
     if span:
         t0, t1 = span
         track = build_track(kana, total=t1 - t0, intensity=intensity,
@@ -259,13 +412,18 @@ def say(text, engine="auto", voice=None, rate="+0%", blink=True, intensity=1.0,
     report = None
     if align:
         try:
-            from align import align as align_track
-            track, report = align_track(track, path)
+            from align import align as align_track, envelope_from_db
+            if db is not None:
+                track, report = align_track(track, env=envelope_from_db(db))
+            else:
+                track, report = align_track(track, path)
         except Exception as e:
             report = {"aligned": False, "reason": f"{type(e).__name__}: {e}"}
 
-    return {
+    out = {
         "engine": name,
+        "cached": False,
+        "fallback_from": fell_back if isinstance(fell_back, dict) else None,
         "voice": voice,
         "kana": kana,
         "duration": dur or track["duration"],
@@ -274,6 +432,8 @@ def say(text, engine="auto", voice=None, rate="+0%", blink=True, intensity=1.0,
         "audio": "/media/" + os.path.basename(path),
         "track": track,
     }
+    _cache_put(ck, out)
+    return out
 
 # --------------------------------------------------------------------------- #
 #  HTTP
@@ -352,7 +512,7 @@ class Handler(SimpleHTTPRequestHandler):
             out = say(text,
                       engine=req.get("engine") or self.engine,
                       voice=req.get("voice") or self.default_voice,
-                      rate=req.get("rate", "+0%"),
+                      rate=req.get("rate") or DEFAULT_RATE,
                       blink=req.get("blink", True),
                       intensity=float(req.get("intensity", 1.0)),
                       trim=req.get("trim", True),
