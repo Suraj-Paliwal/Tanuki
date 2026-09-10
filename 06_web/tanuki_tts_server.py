@@ -82,14 +82,53 @@ def to_kana(text):
 # --------------------------------------------------------------------------- #
 #  TTS backends
 # --------------------------------------------------------------------------- #
-VOICEVOX_URL = os.getenv("VOICEVOX_URL", "http://127.0.0.1:50021")
+# Several engines speak VOICEVOX's HTTP API, and they are not equally good.
+# They are tried in this order, first one that answers wins:
+#
+#   aivis      AivisSpeech - Style-Bert-VITS2 models behind a VOICEVOX-shaped
+#              API. The most natural-sounding of the family. LGPL-3.0.
+#   voicevox   VOICEVOX itself. Reliable, and its phoneme durations are real.
+#   coeiroink / sharevox   same API family again.
+#
+# The one that matters downstream is /audio_query, because that is where the
+# exact mora timing comes from. Whether a given engine's durations are REAL or
+# just plausible-looking is checked against the audio it produced, in say() -
+# so a new engine can be tried here without any risk of silently desyncing the
+# mouth.
+VV_ENGINES = [
+    ("aivis",     "http://127.0.0.1:10101"),
+    ("voicevox",  "http://127.0.0.1:50021"),
+    ("coeiroink", "http://127.0.0.1:50032"),
+    ("sharevox",  "http://127.0.0.1:50025"),
+]
+_ENV_VV = os.getenv("VOICEVOX_URL")
+if _ENV_VV:
+    VV_ENGINES = [("custom", _ENV_VV)] + VV_ENGINES
+
+VOICEVOX_URL = VV_ENGINES[0][1]      # replaced by whichever answers
+_vv_found = None                     # (name, url), cached for the process
+
+
+def _find_vv(recheck=False):
+    """First VOICEVOX-compatible engine that answers. Cached: this runs on
+    every /api/status and we do not want four connection attempts each time."""
+    global _vv_found, VOICEVOX_URL
+    if _vv_found is not None and not recheck:
+        return _vv_found
+    for name, url in VV_ENGINES:
+        try:
+            urllib.request.urlopen(url + "/version", timeout=0.6).read()
+            _vv_found = (name, url)
+            VOICEVOX_URL = url
+            return _vv_found
+        except Exception:
+            continue
+    _vv_found = ()
+    return _vv_found
+
 
 def _have_voicevox():
-    try:
-        urllib.request.urlopen(VOICEVOX_URL + "/version", timeout=1.0).read()
-        return True
-    except Exception:
-        return False
+    return bool(_find_vv())
 
 # Per-engine default voices. These live here, not only in the signatures
 # below, because a default argument does NOT apply when the caller passes the
@@ -101,12 +140,14 @@ DEFAULT_RATE     = "+0%"
 
 def tts_voicevox(text, path, voice=VOICEVOX_SPEAKER, **kw):
     speaker = str(voice or VOICEVOX_SPEAKER)
+    found = _find_vv()
+    base = found[1] if found else VOICEVOX_URL
     q = urllib.request.Request(
-        f"{VOICEVOX_URL}/audio_query?speaker={speaker}&text={urllib.parse.quote(text)}",
+        f"{base}/audio_query?speaker={speaker}&text={urllib.parse.quote(text)}",
         method="POST")
     query = json.loads(urllib.request.urlopen(q, timeout=30).read())
     r = urllib.request.Request(
-        f"{VOICEVOX_URL}/synthesis?speaker={speaker}",
+        f"{base}/synthesis?speaker={speaker}",
         data=json.dumps(query).encode(), method="POST",
         headers={"Content-Type": "application/json"})
     with open(path, "wb") as f:
@@ -543,8 +584,11 @@ class Handler(SimpleHTTPRequestHandler):
             self.end_headers()
             return
         if p == "/api/status":
+            vv = _find_vv()
             return self._json({"engine": pick_backend(self.engine),
-                               "voicevox": _have_voicevox(),
+                               "voicevox": bool(vv),
+                               "local_engine": vv[0] if vv else None,
+                               "local_engine_url": vv[1] if vv else None,
                                "root": ROOT})
         if p.startswith("/media/"):
             f = os.path.join(MEDIA, os.path.basename(p))

@@ -139,15 +139,30 @@ verified, because a guardrail that cannot fail is decoration.
 
 ## Which voice engine to use
 
-All four are free. They are not equally good, and the differences matter more
-than the voice quality:
+All of these are free. They are not equally good, and the differences matter
+more than the voice quality:
 
-| | cost | where it runs | deploys as | lip-sync timing |
+| | where it runs | deploys as | lip-sync timing | note |
 |---|---|---|---|---|
-| **VOICEVOX** | free | your machine / your server | Docker image | **exact — from the engine** |
-| edge-tts | free | Microsoft's servers | can't | estimated, then aligned |
-| gTTS | free | Google's servers | can't | estimated, then aligned |
-| offline | free | in-process | anywhere | estimated, then aligned |
+| **AivisSpeech** | your machine | Docker / Windows app | **exact, if its durations check out** | Style-Bert-VITS2 voices — the most natural of the family. LGPL-3.0 |
+| **VOICEVOX** | your machine | Docker / Windows app | **exact — from the engine** | the reference implementation |
+| COEIROINK / SHAREVOX | your machine | Windows app | same API family | more voices, same shape |
+| edge-tts | Microsoft's servers | can't | estimated, then aligned | ~2.5 s per sentence from some regions |
+| gTTS | Google's servers | can't | estimated, then aligned | |
+| offline | in-process | anywhere | estimated, then aligned | the robot fallback |
+
+**All four local engines speak the same HTTP API**, so the server finds
+whichever is running with no configuration — it tries, in order:
+
+| engine | port |
+|---|---|
+| AivisSpeech | 10101 |
+| VOICEVOX | 50021 |
+| COEIROINK | 50032 |
+| SHAREVOX | 50025 |
+
+`/api/status` reports which one it found as `local_engine`. Override the search
+with `VOICEVOX_URL=http://host:port`.
 
 **Use VOICEVOX.** Three reasons, in order of how much they matter:
 
@@ -170,11 +185,22 @@ than the voice quality:
    The server finds it on `:50021` automatically — nothing to configure. Set
    `VOICEVOX_URL` to point elsewhere. Scaling is ordinary container scaling.
 
-When VOICEVOX answers, the response says `"timing": "voicevox-exact"` and skips
-the alignment pass entirely. The durations are checked against the audio that
-actually came out first; if they disagree by more than 20% the server logs it
-and falls back to the estimating path, so a version change can never silently
-desync the mouth.
+When a local engine answers, the response says `"timing": "voicevox-exact"` and
+skips the alignment pass entirely.
+
+**This is checked, not assumed.** VOICEVOX predicts real per-mora durations;
+another engine in the family may return the same fields filled with something
+plausible rather than something true. So the durations are summed and compared
+against the audio that actually came out, and if they disagree by more than 20%
+the server logs it and falls back to the estimating path:
+
+```
+  [timing] voicevox durations sum to 1.40s but the clip is 2.8s
+           - falling back to estimated timing
+```
+
+That is what makes a new engine safe to try: the worst case is the timing you
+already had, never a silently desynced mouth.
 
 One licence note: VOICEVOX is free for commercial and non-commercial use, but
 each voice requires **credit** in the form `VOICEVOX:キャラクター名`, and some
