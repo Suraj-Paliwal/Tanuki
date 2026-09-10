@@ -197,6 +197,44 @@ BACKENDS = {
     "offline":  (tts_offline,  "wav"),
 }
 
+EDGE_VOICES = [
+    {"id": "ja-JP-NanamiNeural", "name": "Nanami", "style": "female"},
+    {"id": "ja-JP-KeitaNeural",  "name": "Keita",  "style": "male"},
+    {"id": "ja-JP-AoiNeural",    "name": "Aoi",    "style": "female"},
+    {"id": "ja-JP-DaichiNeural", "name": "Daichi", "style": "male"},
+    {"id": "ja-JP-MayuNeural",   "name": "Mayu",   "style": "female"},
+    {"id": "ja-JP-NaokiNeural",  "name": "Naoki",  "style": "male"},
+    {"id": "ja-JP-ShioriNeural", "name": "Shiori", "style": "female"},
+]
+
+
+def list_voices(engine=None):
+    """Every voice the active engine can produce, so a speaker id can be
+    PINNED. A voice is only stable if you name it: the default is whatever the
+    engine calls speaker 1, and that is not the same character across engines.
+    """
+    name = pick_backend(engine or "auto")
+    if name == "voicevox":
+        found = _find_vv()
+        if not found:
+            return name, []
+        out = []
+        try:
+            data = json.loads(urllib.request.urlopen(
+                found[1] + "/speakers", timeout=5).read())
+            for sp in data:
+                for st in sp.get("styles", []):
+                    out.append({"id": str(st.get("id")),
+                                "name": sp.get("name", "?"),
+                                "style": st.get("name", "")})
+        except Exception as e:
+            sys.stderr.write(f"  [voices] {e}\n")
+        return found[0], out
+    if name == "edge":
+        return name, EDGE_VOICES
+    return name, []
+
+
 def pick_backend(pref="auto"):
     if pref != "auto":
         return pref
@@ -590,6 +628,10 @@ class Handler(SimpleHTTPRequestHandler):
                                "local_engine": vv[0] if vv else None,
                                "local_engine_url": vv[1] if vv else None,
                                "root": ROOT})
+        if p == "/api/voices":
+            eng, voices = list_voices(self.engine)
+            return self._json({"engine": eng, "pinned": self.default_voice,
+                               "count": len(voices), "voices": voices})
         if p.startswith("/media/"):
             f = os.path.join(MEDIA, os.path.basename(p))
             if not os.path.exists(f):
@@ -659,6 +701,17 @@ def main():
     print(f"             http://{a.host}:{a.port}/player.html   (tuning bench)")
     print(f"  tts engine: {chosen}"
           + ("   (install edge-tts for a real voice)" if chosen == "offline" else ""))
+    vv = _find_vv()
+    if vv:
+        print(f"  local engine: {vv[0]} at {vv[1]}")
+    if a.voice:
+        print(f"  voice:      {a.voice}   (pinned - the same voice every time)")
+    else:
+        print("  voice:      engine default"
+              + ("" if a.tts != "auto" else
+                 "\n  NOTE: --tts auto picks whichever engine is running, so the"
+                 "\n        voice can change if that changes. Pin both with"
+                 "\n        --tts <engine> --voice <id>.  See /api/voices"))
     print(f"  serving:    {ROOT}\n  pipeline:   {PIPELINE}\n  ctrl-c to stop\n")
     try:
         srv.serve_forever()
