@@ -30,25 +30,19 @@ export class TanukiLipSync {
     this.current = Object.fromEntries(ALL.map((n) => [n, 0]));
     this.goal    = Object.fromEntries(ALL.map((n) => [n, 0]));
 
-    // Attack faster than release: a mouth snaps open and eases shut, and equal
-    // times read as rubbery.
-    // Attack faster than release: a mouth snaps open and eases shut, and equal
-    // times read as rubbery. Both kept short, because an exponential filter
-    // lags its input by roughly its own time constant - 45 ms of attack is
-    // 45 ms of the mouth trailing the voice, which is right at the edge of
-    // what reads as out of sync.
+    // Tracks already contain short transitions and held vowels. Keep this
+    // final smoothing short enough to preserve vowel identity and lip closure.
+    // All mouth channels use ONE coefficient per frame: independent fast
+    // attacks and slow releases stack the old and new morphs above 100%.
     this.attack  = opts.attack  ?? 0.022;
-    this.release = opts.release ?? 0.055;
+    this.release = opts.release ?? 0.022;
 
     // ── timing ────────────────────────────────────────────────────────────
-    // audio.currentTime reports the DECODER position. The sound still has to
-    // cross the output buffer and the hardware before it reaches the listener,
-    // so driving the mouth straight off currentTime always renders it late.
-    // The Web Audio API measures that delay for us - AudioContext.outputLatency
-    // is exactly this number, and it is the difference between wired earbuds
-    // (~10 ms) and Bluetooth (~150 ms+), which is far too large to leave to a
-    // hand-set constant.
-    this.autoLatency = opts.autoLatency ?? true;
+    // HTMLMediaElement.currentTime is a playback clock, not AudioContext's
+    // processing clock. An unrelated context's output latency must not be
+    // blindly applied to it. Extra output-delay compensation is opt-in for
+    // integrations that supply a processing clock and need that correction.
+    this.autoLatency = opts.autoLatency ?? false;
     this.measuredLatency = 0;
 
     // Anticipatory lead. Two reasons, and they point the same way:
@@ -70,10 +64,8 @@ export class TanukiLipSync {
     // strictly better information. This is only so the body has a signal of
     // its own instead of borrowing the mouth's.
     //
-    // Note the bands are read at playback position, with no lead applied,
-    // while the mouth is read `timeShift()` early. So the body naturally
-    // trails the mouth by ~30-40 ms, which is the right way round: lips
-    // anticipate a sound, torsos do not.
+    // Bands use the current signal; mouth sampling has its own lead/trim.
+    // BodyMotion applies additional smoothing to avoid consonant twitches.
     this.useBands = opts.useBands ?? true;
     this.bands = new BandAnalyser(opts.bands || {});
     this.band = { low: 0, mid: 0, high: 0, hit: 0 };
@@ -141,12 +133,13 @@ export class TanukiLipSync {
   }
 
   /**
-   * Total seconds the track is shifted by. Positive samples the track later
-   * (mouth lags), negative earlier (mouth leads).
+   * Sampling offset from the playback clock. Positive looks ahead in the
+   * track (mouth leads); negative delays the mouth. Output buffering delays
+   * sound, so its measured latency must be subtracted, never added.
    */
   timeShift() {
     const auto = this.autoLatency ? this.measuredLatency : 0;
-    return auto + this.lead + this.offset;
+    return this.lead + this.offset - auto;
   }
 
   /**
@@ -164,14 +157,12 @@ export class TanukiLipSync {
       await resumeBounded(ctx);
       const out = typeof ctx.outputLatency === 'number' ? ctx.outputLatency : 0;
       const base = typeof ctx.baseLatency === 'number' ? ctx.baseLatency : 0;
-      // outputLatency is unimplemented on some engines and reports 0; fall back
-      // to baseLatency, and to a small typical figure if neither is available,
-      // rather than assuming zero latency which is never true.
-      this.measuredLatency = out > 0 ? out : (base > 0 ? base + 0.02 : 0.04);
+      // Do not invent a device correction when the browser cannot report it.
+      this.measuredLatency = out > 0 ? out : (base > 0 ? base : 0);
       return this.measuredLatency;
     } catch (_) {
-      this.measuredLatency = 0.04;
-      return this.measuredLatency;
+      this.measuredLatency = 0;
+      return 0;
     }
   }
 
@@ -239,7 +230,26 @@ export class TanukiLipSync {
         : this.bands.synth(dt, this.mode === 'idle' ? 0 : mouthOpenness(this.current));
     }
 
-    for (const n of ALL) {
+    // Vowels are alternative poses of the same mouth, not additive gestures.
+    // Keep their blend inside the authored poses even with overlapping input
+    // tracks, and use a common interpolation coefficient to stay there.
+    let goalTotal = 0, currentTotal = 0;
+    for (const n of MOUTH) {
+      this.goal[n] = clamp01(this.goal[n]);
+      goalTotal += this.goal[n];
+      currentTotal += this.current[n];
+    }
+    if (goalTotal > 1) {
+      for (const n of MOUTH) this.goal[n] /= goalTotal;
+      goalTotal = 1;
+    }
+    const mouthTau = goalTotal < currentTotal - 1e-6 ? this.release : this.attack;
+    const mouthMix = 1 - Math.exp(-dt / Math.max(mouthTau, 1e-4));
+    for (const n of MOUTH) {
+      this.current[n] += (this.goal[n] - this.current[n]) * mouthMix;
+    }
+    // Blink channels are independent of the mouth's blend budget.
+    for (const n of ALL.filter(n => !MOUTH.includes(n))) {
       const g = this.goal[n], c = this.current[n];
       const tau = g > c ? this.attack : this.release;
       // exponential approach, frame-rate independent

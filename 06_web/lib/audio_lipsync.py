@@ -6,7 +6,7 @@ well separated in formant space, so estimating F1/F2 per frame and picking the
 nearest vowel gets you a usable track. Formants are speaker-dependent, so they
 are normalised against the speaker's own median before classification.
 """
-import subprocess, tempfile, wave, os
+import subprocess, tempfile, wave, os, shutil
 import numpy as np
 try:
     from scipy.signal import lfilter, medfilt
@@ -47,6 +47,21 @@ VISEMES = ["A", "I", "U", "E", "O"]
 VOWEL_F = {"A": (750, 1200), "I": (300, 2300), "U": (350, 1300),
            "E": (500, 1900), "O": (500,  900)}
 
+def ffmpeg_executable():
+    """Use an installed decoder, including imageio's bundled Windows binary."""
+    configured = os.environ.get("FFMPEG_BINARY")
+    if configured:
+        return configured
+    found = shutil.which("ffmpeg")
+    if found:
+        return found
+    try:
+        import imageio_ffmpeg
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except (ImportError, RuntimeError):
+        raise RuntimeError("Audio decoding needs ffmpeg on PATH, FFMPEG_BINARY, "
+                           "or the optional imageio-ffmpeg package") from None
+
 def decode(path, sr=SR):
     """Any audio file -> mono float array.
 
@@ -66,9 +81,10 @@ def decode(path, sr=SR):
                         float(np.iinfo(dt).max)
         except Exception:
             pass                       # fall through to ffmpeg
-    out = subprocess.run(["ffmpeg", "-v", "error", "-i", path,
+    out = subprocess.run([ffmpeg_executable(), "-v", "error", "-i", path,
                           "-ac", "1", "-ar", str(sr), "-f", "s16le", "-"],
-                         check=True, stdout=subprocess.PIPE).stdout
+                         check=True, stdout=subprocess.PIPE,
+                         stderr=subprocess.PIPE, timeout=30).stdout
     x = np.frombuffer(out, dtype="<i2").astype(np.float64)
     return x / 32768.0
 

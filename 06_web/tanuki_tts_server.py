@@ -360,7 +360,12 @@ FALLBACK_ORDER = ["voicevox", "edge", "gtts", "offline"]
 def _synthesise(name, text, kana, voice, rate):
     """Run one backend and return the path it wrote. Raises on failure."""
     fn, ext = BACKENDS[name]
-    key = hashlib.sha1(f"{name}|{voice}|{rate}|{text}".encode()).hexdigest()[:16]
+    # Offline speech uses the same kana parser; parser fixes can change the
+    # spoken sequence even if the original input string is unchanged.
+    key_source = f"{name}|{voice}|{rate}|{text}"
+    if name == "offline":
+        key_source += f"|{TRACK_CACHE_VERSION}"
+    key = hashlib.sha1(key_source.encode()).hexdigest()[:16]
     path = os.path.join(MEDIA, f"{key}.{ext}")
     if os.path.exists(path) and os.path.getsize(path) > 0:
         return path
@@ -408,9 +413,11 @@ def _chain(name, engine):
 
 _RESP_CACHE = {}                       # key -> serialised response
 _RESP_LOCK = threading.Lock()
+# Timing and mouth-shape changes must not reuse an older persisted track.
+TRACK_CACHE_VERSION = "vowel-holds-2"
 
 def _resp_key(text, engine, voice, rate, blink, intensity, trim, align):
-    raw = f"{engine}|{voice}|{rate}|{blink}|{intensity}|{trim}|{align}|{text}"
+    raw = f"{TRACK_CACHE_VERSION}|{engine}|{voice}|{rate}|{blink}|{intensity}|{trim}|{align}|{text}"
     return hashlib.sha1(raw.encode()).hexdigest()[:16]
 
 
