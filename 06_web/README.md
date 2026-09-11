@@ -4,6 +4,11 @@ Everything the avatar needs is in this folder: the model, its textures, the
 JavaScript, the Japanese lip-sync pipeline and a voice server. Copy the whole
 folder into a project and it works.
 
+**Japanese lip-shape correction (September 2026).** See `LIP_SYNC_FIX.md` for
+the fixes, validation, and current limitations. The mouth now holds each
+Japanese vowel with short transitions, blends without adding two full poses,
+and preserves lip closure. Old cached mouth tracks are rebuilt automatically.
+
 This file is about *using* it. For how it was built and why —
 [`../TEACH.md`](../TEACH.md) is the full walkthrough, [`../GUIDE.md`](../GUIDE.md)
 the short reference.
@@ -379,44 +384,24 @@ real length varies. The phrase with neither was already well aligned and gained
 almost nothing — which is the result you want: the alignment does work exactly
 where the model is blind, and leaves the rest alone.
 
-### Output latency is measured, not guessed
+### Playback timing and manual trim
 
-`audio.currentTime` reports the **decoder** position. The sound still has to
-cross the output buffer and the hardware before anyone hears it, so driving the
-mouth straight off `currentTime` always renders it late. That delay is about
-10 ms on wired output and can exceed 150 ms on Bluetooth — far too variable for
-a constant.
+The default clock is `audio.currentTime`, the media element's playback
+position. The rig retains a 30 ms anticipatory lead and an optional manual
+`offset`. Positive values move the mouth ahead; negative values delay it.
 
-The Web Audio API measures it: `AudioContext.outputLatency`. The rig reads it
-before every line (it changes if the user switches to Bluetooth mid-session)
-and shifts the track by that much automatically. No configuration.
+Automatic output-latency compensation is now **off by default**. A separate
+AudioContext's device delay is not necessarily an extra delay on the media
+element's playback clock. Applying it blindly can make an otherwise close
+mouth/audio match worse. For an integration using a processing clock, opt in
+with `autoLatency: true`; the correction is then
+`lead + offset - measuredLatency`. Unknown latency is left at zero.
 
-```js
-await tanuki.measureLatency();   // called for you inside speak()
-tanuki.measuredLatency           // seconds, whatever this device reports
-tanuki.timeShift()               // latency + lead + your trim
-```
+The player page's **trim** slider is available for a final comparison on your
+actual speakers or headphones. This is separate from the vowel-shape fixes.
 
-Where `outputLatency` is unimplemented it reports 0, so the rig falls back to
-`baseLatency + 20 ms`, then to 40 ms. Assuming zero would be the one value that
-is never right.
-
-### And a deliberate 30 ms lead
-
-On top of the measured latency the mouth runs 30 ms early, for two reasons that
-point the same way:
-
-- **Real speech is anticipatory.** The lips start forming a vowel during the
-  consonant before it. A mouth that moves exactly on the sound already reads as
-  a beat behind.
-- **The perceptual tolerance is asymmetric.** ITU-R BT.1359 puts the
-  detectability threshold at **45 ms of audio leading video against 125 ms of
-  audio lagging it**; ATSC allows 15 ms lead and 45 ms lag. Erring early is
-  roughly three times safer than erring late.
-
-Adjust with `tanuki.lead` if you disagree. The **trim** slider in the tuning
-bench is a fine adjustment on top of both and should normally stay at zero —
-it is there to diagnose, not to configure.
+References: [HTML media playback position](https://html.spec.whatwg.org/multipage/media.html#dom-media-currenttime),
+[Web Audio output latency](https://www.w3.org/TR/webaudio/#dom-audiocontext-outputlatency).
 
 Pass `{"trim": false}` to `/api/say` if your engine already returns tightly
 trimmed audio.

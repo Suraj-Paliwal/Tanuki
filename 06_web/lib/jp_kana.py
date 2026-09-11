@@ -78,8 +78,9 @@ def romaji_to_kana(s):
 
 def to_hiragana(text):
     text = unicodedata.normalize("NFKC", text)
-    if re.search(r"[a-zA-Z]", text):
-        text = romaji_to_kana(text)
+    # Convert Latin runs only. Passing a mixed Japanese/romaji sentence to
+    # romaji_to_kana drops every Japanese character that it does not recognise.
+    text = re.sub(r"[a-zA-Z']+", lambda m: romaji_to_kana(m.group()), text)
     return "".join(KATA_TO_HIRA.get(c, c) for c in text)
 
 class Mora:
@@ -112,7 +113,7 @@ def moras(text):
             if out and out[-1].vowel:
                 out.append(Mora(c, out[-1].vowel, "long"))
             i += 1; continue
-        if i + 1 < len(h) and h[i+1] in SMALL_Y:
+        if c in VOWEL and i + 1 < len(h) and h[i+1] in SMALL_Y | SMALL_V:
             out.append(Mora(c + h[i+1], VOWEL.get(h[i+1], "a"), "mora", c in BILABIAL))
             i += 2; continue
         if c in VOWEL:

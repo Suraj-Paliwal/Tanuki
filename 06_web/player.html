@@ -335,8 +335,8 @@ function showSync() {
   if (!tanuki) return;
   const el = document.getElementById('sync');
   const lat = tanuki.measuredLatency, lead = tanuki.lead, tot = tanuki.timeShift();
-  el.textContent = `output latency ${(lat*1000).toFixed(0)}ms + lead ${(lead*1000).toFixed(0)}ms`
-                 + ` = mouth leads by ${(tot*1000).toFixed(0)}ms`;
+  el.textContent = `mouth ${tot >= 0 ? 'ahead' : 'behind'} by ${Math.abs(tot*1000).toFixed(0)}ms`
+                 + (tanuki.autoLatency ? ` (output correction ${(lat*1000).toFixed(0)}ms)` : ' (playback clock)');
 }
 offsetEl.oninput = () => {
   const v = parseFloat(offsetEl.value);

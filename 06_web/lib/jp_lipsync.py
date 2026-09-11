@@ -10,12 +10,7 @@ V_OF = {"a": "A", "i": "I", "u": "U", "e": "E", "o": "O"}
 # stress-timed rhythm of English. One duration per mora is therefore a much
 # better first approximation here than it would be for English.
 MORA = 0.135
-PEAK = 0.45        # where in the slot the vowel reaches full opening
-CLOSE_LEAD = 0.35  # how early the lips shut before a bilabial
-
-# /i/ and /u/ are frequently devoiced between voiceless consonants in standard
-# Japanese (です -> "des"). The mouth still forms them, but weakly.
-DEVOICE_AFTER = set("かきくけこさしすせそたちつてとはひふへほぱぴぷぺぽ")
+BLEND = 0.025      # brief transitions leave the vowel's actual shape visible
 
 def plan(text, mora_dur=MORA, total=None, intensity=1.0):
     ms = moras(text)
@@ -26,33 +21,38 @@ def plan(text, mora_dur=MORA, total=None, intensity=1.0):
         mora_dur = total / max(beats, 1e-6)
     ev = [(0.0, None, 0.0)]
     t = 0.0
-    prev_kana = ""
     for i, m in enumerate(ms):
         d = mora_dur * (0.6 if m.kind == "pause" else 1.0)
         if m.kind == "pause":
             ev.append((t, None, 0.0)); ev.append((t + d, None, 0.0))
         elif m.kind == "stop":
             # sokuon: the mouth holds the shape of the coming consonant, closed
-            ev.append((t, None, 0.0)); ev.append((t + d * 0.9, None, 0.0))
+            ev.append((t, None, 0.0)); ev.append((t + d, None, 0.0))
         elif m.kind == "nasal":
             # ん is a beat with the lips together or nearly so
-            ev.append((t + d * 0.3, None, 0.0)); ev.append((t + d * 0.9, None, 0.0))
+            ev.append((t, None, 0.0)); ev.append((t + d, None, 0.0))
         else:
             w = intensity
             if m.kind == "long":
                 w *= 0.95                      # a held vowel, not a new attack
-            if m.vowel in ("i", "u") and prev_kana and prev_kana[-1] in DEVOICE_AFTER:
-                w *= 0.55                      # devoiced: formed but barely voiced
+            # Text alone does not establish whether /i/ or /u/ is devoiced.
+            # Keep its recognisable mouth shape: vocal-fold activity is not
+            # equivalent to morph-target strength, especially for rounded U.
+            attack = min(BLEND, d * 0.2)
             if m.bilabial:
                 # lips must physically meet before /m/, /b/, /p/
-                ev.append((t - d * CLOSE_LEAD * 0.0, None, 0.0))
-                ev.append((t + d * 0.18, None, 0.0))
-            ev.append((t + d * PEAK, V_OF[m.vowel], round(w, 3)))
-        prev_kana = m.kana
+                ev.append((t, None, 0.0))
+                closure_end = t + d * 0.22
+                ev.append((closure_end, None, 0.0))
+                attack += closure_end - t
+            # A single peak per mora crossfaded for the entire syllable, so
+            # most frames showed an in-between mouth instead of A/I/U/E/O.
+            ev.append((t + attack, V_OF[m.vowel], round(w, 3)))
+            ev.append((t + d - min(BLEND, d * 0.2), V_OF[m.vowel], round(w, 3)))
         t += d
-    ev.append((t + mora_dur * 0.5, None, 0.0))
+    ev.append((t, None, 0.0))
     ev.sort(key=lambda e: e[0])
-    return ev, t + mora_dur * 0.5
+    return ev, t
 
 def tracks(events):
     """Events -> one sparse keyframe list per viseme.
