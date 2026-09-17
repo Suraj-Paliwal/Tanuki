@@ -22,6 +22,14 @@ from jp_kana import to_hiragana
 from jp_lipsync import build, VISEMES
 from align import frame_db, envelope_from_db, align, HOP
 
+DEFAULT_SPEED = 0.9
+
+
+def default_voice(voices):
+    """Prefer Mao's calm style for the reminiscence conversation preset."""
+    preferred = next((v for v in voices if v["name"] == "まお" and v["style"] == "おちつき"), None)
+    return (preferred or voices[0])["id"] if voices else None
+
 
 class EngineUnavailable(RuntimeError):
     pass
@@ -136,14 +144,14 @@ class Service:
         text = payload.get("text")
         if not isinstance(text, str) or not text.strip() or len(text) > 160:
             raise ValueError("Enter 1–160 characters of Japanese text.")
-        speed = payload.get("speed", 1.0)
+        speed = payload.get("speed", DEFAULT_SPEED)
         if isinstance(speed, bool) or not isinstance(speed, (int, float)) or not math.isfinite(speed) or not 0.5 <= speed <= 2:
             raise ValueError("Speed must be between 0.5 and 2.0.")
         with self.lock:
             voices = self.engine.voices()
             if not voices:
                 raise EngineUnavailable("No AivisSpeech voice models found. Add a model in AivisSpeech first.")
-            voice = str(payload.get("voice") or voices[0]["id"])
+            voice = str(payload.get("voice") or default_voice(voices))
             if voice not in {v["id"] for v in voices}:
                 raise ValueError("This voice is no longer installed. Click Reconnect and select a voice.")
             params = {"speaker": voice}
@@ -157,7 +165,7 @@ class Service:
                 return {**self.cache[key], "cached": True}
             audio = self.engine.request("/synthesis", params, body=query, post=True)
             track, reading, span, report = make_track(audio, query)
-            result = {"engine": "aivisspeech", "voice": voice, "kana": reading,
+            result = {"engine": "aivisspeech", "voice": voice, "speed": float(speed), "kana": reading,
                       "timing": "audio-aligned-estimate", "align": report,
                       "duration": track["duration"], "speech": span,
                       "track": track, "audio": f"/media/{key}.wav", "cached": False}
@@ -193,6 +201,7 @@ class Handler(SimpleHTTPRequestHandler):
             try:
                 voices = self.service.engine.voices()
                 self.respond({"engine": "aivisspeech", "ready": bool(voices), "voices": voices,
+                              "default_voice": default_voice(voices), "default_speed": DEFAULT_SPEED,
                               "message": "Connected" if voices else "No voice models installed"})
             except EngineUnavailable as e:
                 self.respond({"engine": "aivisspeech", "ready": False, "voices": [], "message": str(e)}, 503)

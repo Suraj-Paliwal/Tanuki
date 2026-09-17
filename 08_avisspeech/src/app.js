@@ -103,6 +103,7 @@ async function connect() {
     const previous = $('voice').value;
     $('voice').replaceChildren(...data.voices.map(v => new Option(`${v.name} · ${v.style}`, v.id)));
     if (data.voices.some(v => v.id === previous)) $('voice').value = previous;
+    else if (data.default_voice) $('voice').value = data.default_voice;
     $('connection').textContent = connected ? '● AivisSpeech connected · Local voice' : data.message;
   } catch (e) {
     connected = false;

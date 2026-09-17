@@ -13,11 +13,11 @@ header{display:flex;justify-content:space-between;align-items:center;margin-bott
 </head><body><main>
 <header><div><span class="tag">Voice experiment / 08</span><h1>Tanuki + AivisSpeech</h1></div><div id="connection" class="connection" role="status">Connecting to local voice engine…</div></header>
 <div class="layout"><section class="stage" aria-label="Animated Tanuki robot"><canvas id="c"></canvas><div class="stage-label"><strong>Your talking Tanuki</strong><small>Japanese voice · Audio-driven lip sync</small></div><div id="meters" class="meters"></div><div id="status" class="status" role="status">Loading the model…</div></section>
-<section class="panel"><h2>Give it something to say.</h2><p class="intro">Choose an AivisSpeech voice, write a short Japanese line, and watch Tanuki speak it.</p>
+<section class="panel"><h2>A gentle conversation.</h2><p class="intro">Reminiscence preset: Mao’s calm voice at 0.90× speed. Adjust the voice and pace to suit the person you’re talking with.</p>
 <div class="row"><div><label for="voice">Voice &amp; style</label><select id="voice" disabled><option>Waiting for AivisSpeech</option></select></div><button id="reconnect" style="flex:0;margin-top:42px">Reconnect</button></div>
-<form id="form"><label for="text">Japanese text <output id="count">0 / 160</output></label><textarea id="text" maxlength="160" required>こんにちは。ぼくはたぬきです。よろしくお願いします。</textarea>
+<form id="form"><label for="text">Japanese text <output id="count">0 / 160</output></label><textarea id="text" maxlength="160" required>こんにちは。よろしければ、昔よく聴いていた歌について、お話を聞かせてください。</textarea>
 <div class="examples"><button type="button" data-text="こんにちは。ぼくはたぬきです。よろしくお願いします。">Greeting</button><button type="button" data-text="あいうえお。ぱぴぷぺぽ。まみむめも。">Vowel test</button><button type="button" data-text="今日はいい天気ですね。一緒にお散歩しましょう。">Conversation</button></div>
-<label for="speed">Speaking speed <output id="speed-value">1.00×</output></label><input id="speed" type="range" min="0.5" max="1.5" step="0.05" value="1">
+<label for="speed">Speaking speed <output id="speed-value">0.90×</output></label><input id="speed" type="range" min="0.5" max="1.5" step="0.05" value="0.9">
 <label for="offset">Lip-sync adjustment <output id="offset-value">0 ms</output></label><input id="offset" type="range" min="-200" max="200" step="10" value="0"><small>Negative delays the mouth. Positive moves it earlier.</small>
 <div class="row actions"><button id="speak" class="primary" disabled>Speak</button><button id="replay" type="button" disabled>Replay</button><button id="stop" type="button" disabled>Stop</button></div></form>
 <div id="details" class="details" aria-live="polite">The first line can take longer while the voice model loads.</div><div class="downloads" id="downloads" hidden><a id="audio-link" download>Download voice</a><a id="track-link" download>Download lip-sync data</a></div>

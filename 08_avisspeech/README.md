@@ -19,6 +19,8 @@ You can also run `python server.py` while your own AivisSpeech app is open. The 
 
 ## Lip sync
 
+**Reminiscence voice preset:** `まお / おちつき` (Mao / Calm, currently style `888753763`) at **0.90×** speed. This is a calm conversational starting point; the listener's preferred voice and pace should guide adjustments. The viewer and API use the same defaults. If this style is not installed, the first available style is selected. An explicit voice or speed still overrides the preset.
+
 1. Discover installed voice/style IDs from `/speakers` (AivisSpeech IDs are not VOICEVOX's default speaker 1).
 2. Request `/audio_query`, retain the engine's mora readings for kanji and dictionary pronunciation, set the requested speed, and send the query to `/synthesis`.
 3. Decode the WAV, measure its actual duration, and find its speech boundaries.
@@ -38,7 +40,7 @@ Content-Type: application/json
 {"text":"こんにちは。たぬきです。","voice":"888753760","speed":1.0}
 ```
 
-`voice` is optional; the first installed style is selected if omitted. Obtain current IDs from `GET /api/voices`. The response includes `audio`, `track`, `duration`, `kana`, `speech`, and `timing: "audio-aligned-estimate"`. Use `tanuki.speak({audio: response.audio, track: response.track})` with the included driver.
+`voice` and `speed` are optional; omission uses the reminiscence preset above. Obtain current IDs and defaults from `GET /api/voices`. The response includes `audio`, `track`, `duration`, `kana`, `speech`, `voice`, `speed`, and `timing: "audio-aligned-estimate"`. Use `tanuki.speak({audio: response.audio, track: response.track})` with the included driver.
 
 The viewer offers downloads of the WAV and complete lip-sync response. Generated files are in `.media/`; its cache, the downloaded `runtime/`, and `vendor/` are excluded from Git. The server only listens on loopback and serves the viewer assets and generated media; it does not expose the engine folder.
 
