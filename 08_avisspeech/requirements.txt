@@ -1,1 +1,10 @@
+# Python dependencies for 08_avisspeech (not the older project versions).
+# Tested environment: Python 3.13.9, NumPy 2.3.5, Windows x64.
+# Install: python -m pip install -r requirements.txt
+# NumPy handles audio samples, resampling, energy analysis and timing alignment.
 numpy>=1.24,<3
+
+# Everything else imported by this server is Python standard library or code
+# included in lib/. Tests use the standard-library unittest module.
+# AivisSpeech Engine 1.2.0 and Three.js 0.169.0 are separate downloads handled
+# by setup.ps1, not pip packages. See run.md for the full software checklist.

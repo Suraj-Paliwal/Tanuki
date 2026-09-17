@@ -21,4 +21,13 @@ When finished, run this from the same folder:
 
 For a fresh checkout or another computer, follow the full guide's first-time setup section before starting. It also covers troubleshooting, custom ports, manual operation and saved clips.
 
+The tested Python setup is **Python 3.13.9 + NumPy 2.3.5**. NumPy is the only additional Python package required by the viewer server. Install it from [08_avisspeech/requirements.txt](08_avisspeech/requirements.txt):
+
+```powershell
+# Run from the 08_avisspeech folder above.
+python -m pip install -r requirements.txt
+```
+
+AivisSpeech Engine 1.2.0 and Three.js 0.169.0 are separate downloads handled by `setup.ps1`. See the [complete dependency checklist](08_avisspeech/run.md#complete-library-and-software-checklist) for everything needed, including optional virtual-environment instructions.
+
 For implementation details, see [08_avisspeech/ARCHITECTURE.md](08_avisspeech/ARCHITECTURE.md). Documentation for older versions remains in their respective folders.

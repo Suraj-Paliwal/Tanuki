@@ -123,6 +123,74 @@ The engine then downloads default voice models and language assets on its first 
 
 If Python is available only in an Anaconda environment, use a PowerShell session with that environment activated before running setup and start. Both commands need to resolve to the same Python environment.
 
+### Complete library and software checklist
+
+The verified environment on this computer is **Python 3.13.9 (64-bit)** with **NumPy 2.3.5** on Windows. Use Python 3.13 (64-bit) to follow that tested setup. Other Python versions have not been verified for this demo.
+
+| Software / library | Required? | How it is supplied |
+| --- | --- | --- |
+| Python 3.13, 64-bit, and pip | Yes | Install Python separately, or use an existing Anaconda environment. `setup.ps1` does not install Python itself. |
+| **NumPy `>=1.24,<3`** | Yes; the only third-party Python package used by this server | Listed in [requirements.txt](requirements.txt). pip selects a release compatible with your Python. Tested here with 2.3.5. |
+| AivisSpeech Engine **1.2.0**, Windows x64 | Yes for speech | Downloaded/extracted by `setup.ps1`, or supplied by your existing AivisSpeech installation. The tested bundled version is 1.2.0. |
+| AivisSpeech voice models and language assets | Yes for speech | Downloaded by the engine at first launch. The preset requires the Mao model with its Calm style; another installed style is used if absent. |
+| Three.js **0.169.0** | Yes for rendering | Downloaded by `setup.ps1` into `vendor/package/`. Loaded by the browser, not Python. |
+| Three.js add-ons: GLTFLoader, RoomEnvironment, EffectComposer, RenderPass, ShaderPass, OutputPass | Yes; included with Three.js | Already contained in the same Three.js download. Do not install them separately. |
+| Browser with WebGL and audio playback | Yes | Runs the page, renderer and browser audio APIs. |
+| PowerShell | Yes for the supplied `.ps1` launchers | Starts setup, the engine and the viewer on Windows. |
+| Windows `tar` with 7z support | Yes for automatic setup | Extracts the downloaded engine and renderer archives. See troubleshooting if the engine archive cannot be extracted. |
+| Node.js | Optional | Only needed for `node --check src/app.js`; not used to run the viewer. |
+
+Python's `argparse`, `hashlib`, `http.server`, `io`, `json`, `math`, `os`, `pathlib`, `random`, `re`, `sys`, `threading`, `unicodedata`, `urllib`, and `wave` modules come with Python. The tests also use built-in modules such as `unittest` and `tempfile`. Do **not** add these to pip requirements.
+
+The `jp_kana`, `jp_lipsync`, and `align` modules are the files included in this project's `lib/` directory. They are local project code, not extra pip downloads.
+
+The supplied prebuilt AivisSpeech executable packages its own engine runtime. You do not need to install its internal inference dependencies into the Python environment used by `server.py`.
+
+For this version's documented run path, **Flask, FastAPI, Uvicorn, SciPy, PyTorch, Transformers, pykakasi, edge-tts, gTTS, ffmpeg, React and Blender do not need separate installation**. Some relate to other versions or to the engine's internal implementation. This server uses Python's built-in HTTP server, decodes its WAV data directly, and receives Japanese readings from AivisSpeech.
+
+### Install just the Python requirements
+
+From PowerShell:
+
+```powershell
+cd "C:\Users\suraj\Downloads\Tanuki\08_avisspeech"
+python -m pip install -r requirements.txt
+python -c "import sys, numpy; print('Python:', sys.version); print('NumPy:', numpy.__version__)"
+```
+
+This installs NumPy only. It does not download AivisSpeech or Three.js; use `setup.ps1` for the complete setup. On this already configured computer, rerunning the pip command is only necessary if the active Python environment is missing the dependency.
+
+### Optional: use a separate Python environment
+
+If you want this project's Python packages kept in their own folder, create a virtual environment before setup:
+
+```powershell
+cd "C:\Users\suraj\Downloads\Tanuki\08_avisspeech"
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+.\setup.ps1
+.\start.ps1
+```
+
+Activate that environment again in each new PowerShell session before running `start.ps1`. The launcher uses whichever `python` command is active. With the environment active, `setup.ps1` installs into it too; its repeated dependency-install step is safe when NumPy is already installed.
+
+When finished:
+
+```powershell
+.\stop.ps1
+deactivate
+```
+
+If PowerShell blocks activation scripts, you can still use the environment's interpreter directly for the manual server path:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe server.py
+```
+
+In that manual case, start the engine separately and make sure the Three.js files were downloaded as described in section 6. The virtual environment contains the viewer's Python dependency; it does not contain the engine's separately managed voice models.
+
 ## 6. Run manually or use an existing AivisSpeech app
 
 This is useful for seeing live logs, using your existing engine, or running without the launcher scripts.
