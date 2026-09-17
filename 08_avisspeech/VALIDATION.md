@@ -9,4 +9,15 @@
 - Tested コハク / ノーマル at 0.5×: generated and played a **7.14 s** line containing kanji.
 - Browser verified model rendering, connected voice dropdown, speech generation, playback completion, replay, and Stop. During replay, visible vowel meters reached **99.99%** and the rendered mouth opened; Stop returned the player to its ready state. No browser warnings/errors were reported during the check.
 
+## Reminiscence preset verification
+
+- The configured default is **まお / おちつき** (Mao / Calm, style `888753763`) at **0.90×** speed.
+- A real `/api/say` request omitting `voice` and `speed` resolved to that style and pace and generated a **7.374 s** clip. The response's duration matched the track duration, and every mouth channel ended at zero.
+- The saved result is in `demo/reminiscence.wav` and `demo/reminiscence.json`.
+- After refresh, the browser showed Mao / Calm selected, speed 0.90× and Speak enabled.
+
+## Reproduce the checks
+
+Follow [run.md](run.md) to start the engine and viewer. The connection checks and browser playback checklist are in section 7; engine-independent tests are in section 10. API details and the meaning of the timing diagnostics are in [ARCHITECTURE.md](ARCHITECTURE.md).
+
 The lip shapes and timing remain estimates. No forced phoneme alignment, listening panel, hardware audio/video measurement, or frame-accurate perceptual accuracy claim is made.

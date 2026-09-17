@@ -1,65 +1,62 @@
-# 08_avisspeech — Tanuki with a local AivisSpeech voice
+# 08_avisspeech — Tanuki for reminiscence conversations
 
-A separate, runnable version of the existing Tanuki robot, using **AivisSpeech only** for Japanese speech. Includes a copy of the `07_web_model` rig and the existing mouth/body animation driver. Earlier project folders are unchanged.
+A local Japanese voice-and-avatar demo using **AivisSpeech** and the existing Tanuki model. It speaks supplied text with estimated lip sync, a choice of installed voices, and playback controls.
 
-## Open it
+## Start here
 
-Run `start.ps1` in PowerShell, then open **http://127.0.0.1:8088**. Choose a voice, enter Japanese text, and press **Speak**. **Replay** repeats the generated line; **Stop** closes the mouth and stops playback. The page reconnects automatically while the engine starts.
+**[Read run.md for complete setup and running instructions](run.md).**
 
-The engine and renderer are already downloaded on this computer. Python with NumPy is required. For a fresh checkout, run `setup.ps1` first; it installs NumPy and downloads the pinned official AivisSpeech Engine 1.2.0 and Three.js 0.169.0. First engine startup downloads the default voices and language assets. Subsequent synthesis runs locally without an API key or paid cloud service.
+On the computer where setup was completed:
 
 ```powershell
-cd C:\Users\suraj\Downloads\Tanuki\08_avisspeech
+cd "C:\Users\suraj\Downloads\Tanuki\08_avisspeech"
 .\start.ps1
-# When finished:
-.\stop.ps1
 ```
 
-You can also run `python server.py` while your own AivisSpeech app is open. The default engine address is `http://127.0.0.1:10101`; override it with `--engine-url` or `AIVISSPEECH_URL`. `start.ps1` is for the bundled Windows engine on the default port.
+Open [the robot viewer](http://127.0.0.1:8088/), wait for the connected message, and press **Speak**. Use `.\stop.ps1` from the same folder when finished. On a fresh checkout, follow the first-time setup section in `run.md` first.
 
-## Lip sync
+## Documentation
 
-**Reminiscence voice preset:** `まお / おちつき` (Mao / Calm, currently style `888753763`) at **0.90×** speed. This is a calm conversational starting point; the listener's preferred voice and pace should guide adjustments. The viewer and API use the same defaults. If this style is not installed, the first available style is selected. An explicit voice or speed still overrides the preset.
+| Guide | What it covers |
+| --- | --- |
+| [run.md](run.md) | Requirements, first-time setup, everyday start/stop, controls, manual startup, troubleshooting, logs and backups |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Components, lip-sync method, API, configuration, cache behavior, cancellation and file responsibilities |
+| [VALIDATION.md](VALIDATION.md) | Recorded automated checks, real voice tests and limits of the evidence |
 
-1. Discover installed voice/style IDs from `/speakers` (AivisSpeech IDs are not VOICEVOX's default speaker 1).
-2. Request `/audio_query`, retain the engine's mora readings for kanji and dictionary pronunciation, set the requested speed, and send the query to `/synthesis`.
-3. Decode the WAV, measure its actual duration, and find its speech boundaries.
-4. Build A/I/U/E/O mouth shapes, then use constrained audio-envelope alignment to adjust their timing. Gate the mouth closed during actual silence, including pauses inside the sentence.
-5. Drive every mouth mesh from the **same audio element's playback time**. The existing rig adds a 30 ms anticipatory lead. The adjustment slider adds −200 to +200 ms to tune the display for your audio device.
+There is also a short [run.md at the project root](../run.md) pointing to this version.
 
-This is **estimated lip timing**, not exact phoneme alignment. AivisSpeech explicitly returns dummy zero values for `consonant_length` and `vowel_length`; matching an audio file's overall duration cannot prove that individual syllables align. Audio-envelope matching improves rhythm but can still choose the wrong vowel timing, especially in long or expressive phrases. Use short Japanese lines (maximum 160 characters per request). English pronunciation/lip shapes are not targeted.
+## Reminiscence preset
 
-Official API reference: [AivisSpeech Engine compatibility and mora fields](https://github.com/Aivis-Project/AivisSpeech-Engine#readme).
+The default voice is **まお / おちつき — Mao / Calm**, currently style ID `888753763`, at **0.90×** speed. This is a gentle conversational starting point; adjust the voice and pace to the listener's preference. If the style is absent, the first installed style is used.
 
-## Integration
+The starting prompt politely invites the listener to talk about songs they used to hear:
 
-```http
-POST /api/say
-Content-Type: application/json
+> こんにちは。よろしければ、昔よく聴いていた歌について、お話を聞かせてください。
 
-{"text":"こんにちは。たぬきです。","voice":"888753760","speed":1.0}
-```
+The viewer and API use this voice/speed preset. Voice and speed controls can override it for a new line. Changes made in the viewer do not persist across page reloads.
 
-`voice` and `speed` are optional; omission uses the reminiscence preset above. Obtain current IDs and defaults from `GET /api/voices`. The response includes `audio`, `track`, `duration`, `kana`, `speech`, `voice`, `speed`, and `timing: "audio-aligned-estimate"`. Use `tanuki.speak({audio: response.audio, track: response.track})` with the included driver.
+## What is included
 
-The viewer offers downloads of the WAV and complete lip-sync response. Generated files are in `.media/`; its cache, the downloaded `runtime/`, and `vendor/` are excluded from Git. The server only listens on loopback and serves the viewer assets and generated media; it does not expose the engine folder.
+- A copy of the Tanuki model and textures from `07_web_model`, plus the existing animation helpers.
+- A local Python server that requests AivisSpeech audio and creates matching A/I/U/E/O mouth tracks.
+- A viewer with voice selection, speed, lip-sync adjustment, Speak, Replay, Stop and WAV/JSON downloads.
+- Windows setup/start/stop scripts, five engine-independent Python tests, and recorded real-engine verification.
+- Saved [normal-voice greeting](demo/greeting.wav) and [calm reminiscence sample](demo/reminiscence.wav), with their matching [greeting response](demo/greeting.json) and [reminiscence response](demo/reminiscence.json).
 
-## Files and maintenance
+This folder runs without the earlier `06_web` or `07_web_model` directories. It does not train a voice, modify the mesh, listen to the person, or generate conversational replies. A reply-generating application can connect to the documented `/api/say` endpoint.
 
-- `server.py`: AivisSpeech client, audio alignment, local HTTP API.
-- `index.html`, `src/app.js`: viewer and voice controls.
-- `model/`: copied Tanuki model and textures.
-- `demo/greeting.wav`, `demo/greeting.json`: a verified real AivisSpeech greeting and its lip-sync response.
-- `src/`, `lib/`: copied animation and Japanese mouth-shape helpers.
-- `runtime/Windows-x64/`: official, unmodified engine distribution.
-- `runtime/*.log`: engine/server output. `stop.ps1` stops only recorded processes whose paths match this version.
-- `%APPDATA%/AivisSpeech-Engine/`: engine-managed downloaded voice models, settings and logs; language assets may also use the standard user cache.
+## Lip-sync expectations
 
-```powershell
-python -m unittest discover -s tests -v
-node --check src/app.js
-```
+The mouth follows the audio playback clock. Japanese vowel shapes come from the engine's reading, with timing estimated from the generated audio and mouth closure during silence. AivisSpeech does not provide usable exact phoneme durations in the current API, so this is **audio-aligned estimation**, not exact syllable synchronization. The adjustment slider can tune an overall offset.
 
-Tests cover engine reading extraction, stereo WAV resampling, silent intervals, bounded mouth weights, dynamic style IDs, matching audio/track caching, and explicit engine failures. These automated checks establish timing/data consistency; they do not measure perceptual lip-sync accuracy.
+Use short Japanese lines: input is limited to 160 characters and generated audio to 45 seconds. English lip shapes are not targeted. See [the timing explanation](ARCHITECTURE.md#audio-and-lip-timing) for details.
 
-Third-party software and voices retain their own licenses. The renderer's MIT license is in `vendor/package/LICENSE`. AivisSpeech Engine is distributed under LGPL-3.0; see its [official repository](https://github.com/Aivis-Project/AivisSpeech-Engine). Voice-model terms are supplied by each voice creator through AivisSpeech/AivisHub.
+## Dependencies and storage
+
+The supplied setup pins **AivisSpeech Engine 1.2.0** and **Three.js 0.169.0**, and requires **NumPy >=1.24,<3**. The current copy was tested on Windows with Python 3.13. No paid cloud speech API or API key is used.
+
+`runtime/`, `vendor/`, `.media/`, logs and Python bytecode are excluded from Git. The engine also stores voice models and settings in `%APPDATA%\AivisSpeech-Engine\`; language assets may use the standard user cache. Setup and first-run downloads need internet access. See [storage and backup instructions](run.md#9-logs-saved-clips-and-backups) before moving the project to another computer.
+
+## Third-party licenses
+
+The unmodified AivisSpeech Engine is distributed under LGPL-3.0; see its [official repository](https://github.com/Aivis-Project/AivisSpeech-Engine). Three.js's MIT license is in `vendor/package/LICENSE` after setup. Individual voice models retain their creators' terms supplied through AivisSpeech/AivisHub.
