@@ -3,6 +3,10 @@
 A working guide to the tanuki rig — what each piece does, why it does it that
 way, and which parts fought back. Written so you can change any of it yourself.
 
+For the **long version** — the whole method in order, with the reasoning, the
+dead ends and how to verify each step — see [`TEACH.md`](TEACH.md). For using
+what already exists, see [`06_web/README.md`](06_web/README.md).
+
 ---
 
 ## The shape of the whole thing
@@ -235,6 +239,39 @@ No bones, so only the whole object can move. That is enough: a slow breath, a
 weight shift, and a nod on the stressed syllables. The body **lags** the mouth
 (smoothed over ~0.1s) or it twitches on every consonant instead of riding the
 phrase. Applied to a wrapper group so it never fights your own placement.
+
+The first version drove all of that from one number — how open the mouth was.
+That is a good mouth signal and a bad body signal, because it is a function of
+*which vowel* is being said: the tanuki leaned forward on あ and went still on
+い, not because the sentence had a shape but because /i/ is a narrow vowel.
+
+So the body now reads the audio spectrum instead, split three ways
+(`06_web/src/bands.js`):
+
+- **low, 70–260 Hz** — the voiced fundamental. Present whenever the folds are
+  working. The torso follows this, and the breath shallows while it is high,
+  because you do breathe shallower while talking.
+- **mid, 260–2200 Hz** — where F1 and F2 live, so this is perceived loudness.
+  The lean and the bob follow it: an emphatic phrase commits more than a
+  muttered one.
+- **high, 2600–7000 Hz** — frication and plosive bursts. What gets used is the
+  **rise** of this band, not its value, because a consonant is an event and not
+  a level. A rise fires an impulse that decays over ~0.2 s, so the head ticks
+  once and recovers. This is the part that matters: the nods now land on the
+  consonants instead of on a fixed 1.55 Hz sine that drifts across the sentence.
+
+Each band is normalised against a running peak (instant attack, ~6 dB/s decay),
+which is an automatic gain control with a few seconds of memory. Without it a
+fixed dB range means the body is either dead or pinned depending on which TTS
+engine produced the clip.
+
+The three bands smooth at different rates — 0.18 s, 0.09 s, 0.03 s. Heavy
+things settle slowly. Flattening those out throws away the whole point of
+splitting them.
+
+Fallback: with no audio graph, `synth()` manufactures the bands from mouth
+openness, which is the old behaviour. `body.bandDrive = false` forces it, and
+`player.html` has a checkbox so you can A/B it mid-sentence.
 
 ---
 

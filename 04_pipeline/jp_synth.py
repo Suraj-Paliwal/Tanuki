@@ -6,8 +6,31 @@ demoed without shipping a voice model. Source-filter: a glottal pulse train
 through three resonators tuned to each vowel, with crude consonant onsets.
 """
 import numpy as np
-from scipy.signal import lfilter
 from jp_kana import moras
+
+try:
+    from scipy.signal import lfilter as _lfilter
+except ImportError:
+    # This backend exists so the demo never hard-fails with no network and no
+    # voice model - so it must not hard-fail on a missing SciPy either. The
+    # only filter used here is a 2-pole resonator, which is four lines of
+    # recursion. Slower than SciPy and identical in output.
+    def _lfilter(b, a, x):
+        b = np.asarray(b, float) / a[0]
+        a = np.asarray(a, float) / a[0]
+        x = np.asarray(x, float)
+        y = np.zeros_like(x)
+        nb, na = len(b), len(a)
+        for n in range(len(x)):
+            acc = 0.0
+            for i in range(nb):
+                if n - i >= 0:
+                    acc += b[i] * x[n - i]
+            for j in range(1, na):
+                if n - j >= 0:
+                    acc -= a[j] * y[n - j]
+            y[n] = acc
+        return y
 
 SR = 22050
 VOWEL_F = {"a": (750, 1200, 2600), "i": (300, 2300, 3000),
@@ -20,7 +43,7 @@ NASAL  = set("まみむめもなにぬねの")
 def _reson(x, f, bw, sr=SR):
     r = np.exp(-np.pi * bw / sr)
     th = 2 * np.pi * f / sr
-    return lfilter([1 - r], [1, -2 * r * np.cos(th), r * r], x)
+    return _lfilter([1 - r], [1, -2 * r * np.cos(th), r * r], x)
 
 def _glottal(n, f0, sr=SR):
     t = np.arange(n) / sr
