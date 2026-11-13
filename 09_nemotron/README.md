@@ -1,14 +1,21 @@
-# Tanuki + Nemotron Bolt: integration plan
+# Tanuki experiment and local conversation
 
-Status: feasibility assessment only. No model has been downloaded, runtime installed, or chat interface implemented in this folder.
+Status: planning and design review only. No experiment controller, model runtime or chat interface has been implemented in this folder.
 
-## Intended flow
+Start with [goal.md](goal.md), the current development specification. It prioritizes the prerecorded story-recall experiment, followed by a separate local conversation mode.
+
+- [Elephant–Goldfish review](ELEPHANT_GOLDFISH_REVIEW.md): fresh-context findings, dispositions and remaining readiness gates.
+- [Six candidate dialogue stories](EXPERIMENT_STORIES_DRAFT.md): draft materials requiring review; three reference stories and one practice story remain to be prepared.
+
+The earlier feasibility notes below are retained as background for the later conversation mode. Where they differ from `goal.md`, the current goal takes precedence. In particular, Nemotron installation is not a prerequisite for the experimental release.
+
+## Earlier conversation feasibility assessment
 
 Browser text input -> local Python chat endpoint -> Nemotron inference server -> Japanese reply -> sentence queue -> AivisSpeech -> Tanuki audio playback and lip sync.
 
 Use the working components in ../08_avisspeech as the starting point. That version currently speaks supplied text; it does not generate replies or transcribe microphone audio.
 
-## Proposed first version
+## Earlier proposed conversation version
 
 - Separate web interface with chat history, Send, Stop, voice selection, and the Tanuki avatar.
 - Local backend calling an OpenAI-compatible inference endpoint. Keep the inference endpoint on localhost.
@@ -43,4 +50,4 @@ The memory capacity looks promising, but this is not a compatibility or speed te
 - Official model card and serving examples: https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-4GB
 - Existing project: ../08_avisspeech/README.md and ../08_avisspeech/ARCHITECTURE.md
 
-Next technical milestone: verify a Turing-compatible inference runtime, load the official GGUF, and measure Japanese generation alongside AivisSpeech before building the complete chat interface.
+Current next milestone: validate local audio capture, playback timing, completion handling and avatar synchronization with synthetic fixtures. Nemotron compatibility testing belongs to the later conversation milestone.
