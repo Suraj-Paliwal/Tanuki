@@ -1,0 +1,133 @@
+{
+  "$comment": [
+    "DEVELOPMENT configuration. Not a study configuration and not approved for",
+    "participant use. Values marked proposal are engineering defaults, not",
+    "research decisions; goal.md section 14 lists the decisions that are still",
+    "open and must be settled before collection.",
+    "",
+    "goal.md section 12 requires the configuration to record mode, versioned",
+    "device identities, detector settings, timing policy, assets/allocation,",
+    "the data root and the recall cap. Everything here is frozen at session",
+    "start; changing any of it requires ending the session and creating a new",
+    "configuration version."
+  ],
+
+  "config_version": "0.1-dev",
+  "mode": "experiment",
+  "session_id": "dev-session",
+  "is_participant_session": false,
+
+  "protocol": {
+    "$comment": "Proposals pending research confirmation (goal.md 6, 14).",
+    "thresholds_s": [0.5, 1.0, 2.0],
+    "recall_cap_s": 180,
+    "recall_cap_origin": "instruction_audible_end",
+    "recall_cap_origin_status": "proposal",
+    "encouragements_per_trial": 1,
+    "reference_trials_play_encouragement": false,
+    "overlap_policy": "play_through_resumed_speech",
+    "overlap_policy_status": "proposal",
+    "rearm_on_precommit_cancellation": true,
+    "rearm_policy_status": "proposal"
+  },
+
+  "audio": {
+    "samplerate": 48000,
+    "blocksize": 480,
+    "channels": 1,
+    "$comment_device": [
+      "Devices are pinned by identity, not by PortAudio index: indices move",
+      "when a Bluetooth headset connects, and a remote-desktop session can",
+      "redirect or claim endpoints. The preflight refuses to fall back to a",
+      "different device.",
+      "",
+      "The output key below was measured as the only host API on this PC that",
+      "meets the candidate timing target (decisions.md D5). It must be",
+      "re-measured at the physical machine with the final speakers attached.",
+      "",
+      "No input device is pinned because this PC has none attached. A capture",
+      "device must be chosen, pinned here and calibrated before any session",
+      "that records a participant."
+    ],
+    "output_device_key": "Windows WASAPI|VZ239 (NVIDIA High Definition Audio)|0in/2out",
+    "input_device_key": null
+  },
+
+  "detector": {
+    "$comment": [
+      "Must match timing.DEFAULT_PROFILE. These values shape where a speech",
+      "offset lands, so they are part of the manipulation and must be frozen",
+      "by the research director before collection."
+    ],
+    "detector": "unset",
+    "sample_rate": 16000.0,
+    "frame_ms": 32.0,
+    "speech_threshold": 0.5,
+    "exit_threshold": 0.35,
+    "min_speech_ms": 96.0,
+    "hangover_ms": 150.0,
+    "status": "engineering default, not frozen"
+  },
+
+  "timing_policy": {
+    "$comment": [
+      "max_onset_delay_ms is the candidate engineering target from goal.md",
+      "section 7. It is a proposal, not a research-approved tolerance.",
+      "",
+      "blocking=false implements the decision to measure the configuration at",
+      "the start of every session, record it, and let the session proceed. Set",
+      "blocking=true for participant collection once a tolerance is frozen."
+    ],
+    "max_onset_delay_ms": 100.0,
+    "blocking": false,
+    "lateness_budget_ms": 50.0,
+    "commit_no_earlier_than_deadline": true
+  },
+
+  "preflight": {
+    "$comment": [
+      "check_capture opens the live microphone. It is off by default and must",
+      "be switched on deliberately; the researcher view has to show that the",
+      "microphone is live while it runs."
+    ],
+    "samplerate": 48000,
+    "blocksize": 480,
+    "channels": 1,
+    "output_device_key": "Windows WASAPI|VZ239 (NVIDIA High Definition Audio)|0in/2out",
+    "input_device_key": null,
+    "max_onset_delay_ms": 100.0,
+    "timing_blocking": false,
+    "commit_trials": 20,
+    "probe_lead_ms": 10.0,
+    "probe_amplitude": 0.02,
+    "check_capture": false,
+    "capture_seconds": 2.0,
+    "capture_blocking": true,
+    "thresholds": [0.5, 1.0, 2.0],
+    "min_free_gb": 5.0,
+    "scratch_dir": ".preparation"
+  },
+
+  "materials": {
+    "$comment": [
+      "No frozen materials exist. M2 produces stimuli/manifest.json with ten",
+      "reviewed assets and their hashes; the six candidate stories in",
+      "EXPERIMENT_STORIES_DRAFT.md are drafts, not validated stimuli."
+    ],
+    "stimulus_manifest": null,
+    "allocation": null,
+    "rubrics": null
+  },
+
+  "data": {
+    "$comment": [
+      "Authoritative session files must live in a university-managed",
+      "research-data directory outside this repository and outside any served",
+      "web root (goal.md section 10). No path is configured, so no session can",
+      "write real data yet; the preflight reports that as NOT_RUN rather than",
+      "defaulting to somewhere convenient."
+    ],
+    "research_data_root": null,
+    "retention_policy": "research-director decision, not set"
+  }
+}

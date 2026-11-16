@@ -1,0 +1,44 @@
+# Python dependencies for 09_nemotron (the experiment controller).
+# Install: python -m pip install -r requirements.txt
+#
+# These are exact pins, not ranges. goal.md section 1 (M1) and section 12 both
+# require the audio dependencies to be *pinned*, and for a checkpoint whose
+# whole output is timing numbers from PortAudio, the runtime that produced them
+# is part of the result. An earlier version of this file gave ranges and
+# recorded the measured versions only in a comment, so a later install could
+# not reproduce the environment the evidence came from.
+#
+# Measured environment for the M1 audio spike (2026-11-17):
+#   Python 3.13.9 (Anaconda), Windows 11 Education 10.0.26300, x64
+#   PortAudio V19.7.0-devel (bundled with the sounddevice wheel; reported by
+#   audio_io.inventory() as "portaudio" and recorded with each measurement)
+#
+# To move to newer versions: change the pin, rerun
+# `python -m unittest discover -s tests -p "test_*.py"` and the device checks in
+# validation/audio_spike.md, and record the new environment block there. Do not
+# relax a pin to a range.
+
+# Audio sample handling, resampling and timing arithmetic.
+numpy==2.3.5
+
+# Native capture/playback through PortAudio. The controller owns playback, so
+# this (not the browser) is the audio clock; see goal.md section 5.
+sounddevice==0.5.5
+
+# --- not yet required by committed code -------------------------------------
+# Silero VAD will run through ONNX Runtime on CPU (M3, vad.py). onnxruntime
+# 1.24.4 is present in the measured environment, but no committed module
+# imports it, so it is deliberately not a requirement yet. Pin it here when
+# vad.py lands:
+# onnxruntime==1.24.4
+#
+# soundfile 0.13.1 is likewise present but unused: clips are read and written
+# with the standard library's wave module, which keeps the recording path
+# dependency-free.
+#
+# whisper.cpp (M5 transcription) and AivisSpeech Engine (M2 preparation) are
+# separate local downloads, not pip packages. The experiment mode must run with
+# neither Nemotron nor a transcription model loaded.
+#
+# Everything else used by the controller is Python standard library: wave,
+# hashlib, queue, threading, json, pathlib, unittest.

@@ -1,0 +1,364 @@
+{
+  "tool": "tools/check_audio.py",
+  "audio_io_module": "audio_io.py",
+  "environment": {
+    "python": "3.13.9",
+    "platform": "Windows-11-10.0.26300-SP0",
+    "machine": "AMD64",
+    "numpy": "2.3.5",
+    "timestamp_utc": "2026-11-16T17:29:24Z",
+    "sounddevice": "0.5.5",
+    "soundfile": "0.13.1",
+    "onnxruntime": "1.24.4"
+  },
+  "inventory": {
+    "available": true,
+    "portaudio": "PortAudio V19.7.0-devel, revision unknown",
+    "sounddevice": "0.5.5",
+    "hostapis": [
+      {
+        "index": 0,
+        "name": "MME",
+        "default_input_device": -1,
+        "default_output_device": 1
+      },
+      {
+        "index": 1,
+        "name": "Windows DirectSound",
+        "default_input_device": -1,
+        "default_output_device": 4
+      },
+      {
+        "index": 2,
+        "name": "Windows WASAPI",
+        "default_input_device": -1,
+        "default_output_device": 8
+      },
+      {
+        "index": 3,
+        "name": "Windows WDM-KS",
+        "default_input_device": 13,
+        "default_output_device": 16
+      }
+    ],
+    "devices": [
+      {
+        "index": 0,
+        "name": "Microsoft Sound Mapper - Output",
+        "hostapi": 0,
+        "hostapi_name": "MME",
+        "max_input_channels": 0,
+        "max_output_channels": 2,
+        "default_samplerate": 44100.0,
+        "key": "MME|Microsoft Sound Mapper - Output|0in/2out"
+      },
+      {
+        "index": 1,
+        "name": "VZ239 (NVIDIA High Definition A",
+        "hostapi": 0,
+        "hostapi_name": "MME",
+        "max_input_channels": 0,
+        "max_output_channels": 2,
+        "default_samplerate": 44100.0,
+        "key": "MME|VZ239 (NVIDIA High Definition A|0in/2out"
+      },
+      {
+        "index": 2,
+        "name": "Digital Output (High Definition",
+        "hostapi": 0,
+        "hostapi_name": "MME",
+        "max_input_channels": 0,
+        "max_output_channels": 2,
+        "default_samplerate": 44100.0,
+        "key": "MME|Digital Output (High Definition|0in/2out"
+      },
+      {
+        "index": 3,
+        "name": "PHL 224E5 (NVIDIA High Definiti",
+        "hostapi": 0,
+        "hostapi_name": "MME",
+        "max_input_channels": 0,
+        "max_output_channels": 2,
+        "default_samplerate": 44100.0,
+        "key": "MME|PHL 224E5 (NVIDIA High Definiti|0in/2out"
+      },
+      {
+        "index": 4,
+        "name": "Primary Sound Driver",
+        "hostapi": 1,
+        "hostapi_name": "Windows DirectSound",
+        "max_input_channels": 0,
+        "max_output_channels": 2,
+        "default_samplerate": 44100.0,
+        "key": "Windows DirectSound|Primary Sound Driver|0in/2out"
+      },
+      {
+        "index": 5,
+        "name": "VZ239 (NVIDIA High Definition Audio)",
+        "hostapi": 1,
+        "hostapi_name": "Windows DirectSound",
+        "max_input_channels": 0,
+        "max_output_channels": 2,
+        "default_samplerate": 44100.0,
+        "key": "Windows DirectSound|VZ239 (NVIDIA High Definition Audio)|0in/2out"
+      },
+      {
+        "index": 6,
+        "name": "Digital Output (High Definition Audio Device)",
+        "hostapi": 1,
+        "hostapi_name": "Windows DirectSound",
+        "max_input_channels": 0,
+        "max_output_channels": 2,
+        "default_samplerate": 44100.0,
+        "key": "Windows DirectSound|Digital Output (High Definition Audio Device)|0in/2out"
+      },
+      {
+        "index": 7,
+        "name": "PHL 224E5 (NVIDIA High Definition Audio)",
+        "hostapi": 1,
+        "hostapi_name": "Windows DirectSound",
+        "max_input_channels": 0,
+        "max_output_channels": 2,
+        "default_samplerate": 44100.0,
+        "key": "Windows DirectSound|PHL 224E5 (NVIDIA High Definition Audio)|0in/2out"
+      },
+      {
+        "index": 8,
+        "name": "VZ239 (NVIDIA High Definition Audio)",
+        "hostapi": 2,
+        "hostapi_name": "Windows WASAPI",
+        "max_input_channels": 0,
+        "max_output_channels": 2,
+        "default_samplerate": 48000.0,
+        "key": "Windows WASAPI|VZ239 (NVIDIA High Definition Audio)|0in/2out"
+      },
+      {
+        "index": 9,
+        "name": "Digital Output (High Definition Audio Device)",
+        "hostapi": 2,
+        "hostapi_name": "Windows WASAPI",
+        "max_input_channels": 0,
+        "max_output_channels": 2,
+        "default_samplerate": 48000.0,
+        "key": "Windows WASAPI|Digital Output (High Definition Audio Device)|0in/2out"
+      },
+      {
+        "index": 10,
+        "name": "PHL 224E5 (NVIDIA High Definition Audio)",
+        "hostapi": 2,
+        "hostapi_name": "Windows WASAPI",
+        "max_input_channels": 0,
+        "max_output_channels": 2,
+        "default_samplerate": 48000.0,
+        "key": "Windows WASAPI|PHL 224E5 (NVIDIA High Definition Audio)|0in/2out"
+      },
+      {
+        "index": 11,
+        "name": "SPDIF Out (HD Audio SPDIF out)",
+        "hostapi": 3,
+        "hostapi_name": "Windows WDM-KS",
+        "max_input_channels": 0,
+        "max_output_channels": 2,
+        "default_samplerate": 44100.0,
+        "key": "Windows WDM-KS|SPDIF Out (HD Audio SPDIF out)|0in/2out"
+      },
+      {
+        "index": 12,
+        "name": "Headset (@System32\\drivers\\bthhfenum.sys,#2;%1 Hands-Free%0  ;(YYK-Q80.))",
+        "hostapi": 3,
+        "hostapi_name": "Windows WDM-KS",
+        "max_input_channels": 0,
+        "max_output_channels": 1,
+        "default_samplerate": 8000.0,
+        "key": "Windows WDM-KS|Headset (@System32\\drivers\\bthhfenum.sys,#2;%1 Hands-Free%0  ;(YYK-Q80.))|0in/1out"
+      },
+      {
+        "index": 13,
+        "name": "Headset (@System32\\drivers\\bthhfenum.sys,#2;%1 Hands-Free%0  ;(YYK-Q80.))",
+        "hostapi": 3,
+        "hostapi_name": "Windows WDM-KS",
+        "max_input_channels": 1,
+        "max_output_channels": 0,
+        "default_samplerate": 8000.0,
+        "key": "Windows WDM-KS|Headset (@System32\\drivers\\bthhfenum.sys,#2;%1 Hands-Free%0  ;(YYK-Q80.))|1in/0out"
+      },
+      {
+        "index": 14,
+        "name": "Headset (@System32\\drivers\\bthhfenum.sys,#2;%1 Hands-Free%0  ;(OnePlus Nord Buds 3 Pro))",
+        "hostapi": 3,
+        "hostapi_name": "Windows WDM-KS",
+        "max_input_channels": 0,
+        "max_output_channels": 1,
+        "default_samplerate": 16000.0,
+        "key": "Windows WDM-KS|Headset (@System32\\drivers\\bthhfenum.sys,#2;%1 Hands-Free%0  ;(OnePlus Nord Buds 3 Pro))|0in/1out"
+      },
+      {
+        "index": 15,
+        "name": "Headset (@System32\\drivers\\bthhfenum.sys,#2;%1 Hands-Free%0  ;(OnePlus Nord Buds 3 Pro))",
+        "hostapi": 3,
+        "hostapi_name": "Windows WDM-KS",
+        "max_input_channels": 1,
+        "max_output_channels": 0,
+        "default_samplerate": 16000.0,
+        "key": "Windows WDM-KS|Headset (@System32\\drivers\\bthhfenum.sys,#2;%1 Hands-Free%0  ;(OnePlus Nord Buds 3 Pro))|1in/0out"
+      },
+      {
+        "index": 16,
+        "name": "Output (NVIDIA High Definition Audio)",
+        "hostapi": 3,
+        "hostapi_name": "Windows WDM-KS",
+        "max_input_channels": 0,
+        "max_output_channels": 2,
+        "default_samplerate": 44100.0,
+        "key": "Windows WDM-KS|Output (NVIDIA High Definition Audio)|0in/2out"
+      },
+      {
+        "index": 17,
+        "name": "Output (NVIDIA High Definition Audio)",
+        "hostapi": 3,
+        "hostapi_name": "Windows WDM-KS",
+        "max_input_channels": 0,
+        "max_output_channels": 2,
+        "default_samplerate": 44100.0,
+        "key": "Windows WDM-KS|Output (NVIDIA High Definition Audio)|0in/2out"
+      },
+      {
+        "index": 18,
+        "name": "Headphones ()",
+        "hostapi": 3,
+        "hostapi_name": "Windows WDM-KS",
+        "max_input_channels": 0,
+        "max_output_channels": 2,
+        "default_samplerate": 44100.0,
+        "key": "Windows WDM-KS|Headphones ()|0in/2out"
+      },
+      {
+        "index": 19,
+        "name": "Headphones ()",
+        "hostapi": 3,
+        "hostapi_name": "Windows WDM-KS",
+        "max_input_channels": 0,
+        "max_output_channels": 2,
+        "default_samplerate": 48000.0,
+        "key": "Windows WDM-KS|Headphones ()|0in/2out"
+      }
+    ],
+    "default_input_device": -1,
+    "default_output_device": 1,
+    "input_device_count": 2,
+    "output_device_count": 18,
+    "capture_available": false,
+    "playback_available": true,
+    "warnings": [
+      "no default input device: PortAudio reports default_input_device < 0 for the default host API, so continuous recording cannot be opened on this configuration"
+    ]
+  },
+  "checks": [
+    {
+      "check": "detector_profile_serves_shortest_threshold",
+      "status": "PASS",
+      "detail": "hangover 150 ms + 10 ms decision budget < 0.5 s"
+    },
+    {
+      "check": "pause_deadline_0.5s",
+      "status": "PASS",
+      "detail": "deadline 0.8200000000000001, expected 0.820000 (offset 0.320s + 0.5s)",
+      "detector_delay_s": 0.15
+    },
+    {
+      "check": "pause_deadline_1.0s",
+      "status": "PASS",
+      "detail": "deadline 1.32, expected 1.320000 (offset 0.320s + 1.0s)",
+      "detector_delay_s": 0.15
+    },
+    {
+      "check": "pause_deadline_2.0s",
+      "status": "PASS",
+      "detail": "deadline 2.3200000000000003, expected 2.320000 (offset 0.320s + 2.0s)",
+      "detector_delay_s": 0.15
+    },
+    {
+      "check": "no_prompt_before_deadline",
+      "status": "PASS",
+      "detail": "output stayed silent until the deadline"
+    },
+    {
+      "check": "prompt_commits_after_deadline",
+      "status": "PASS",
+      "detail": "committed_at - deadline = 0.00 ms",
+      "commit_delay_ms": 2.220446049250313e-13,
+      "audible_onset": {
+        "seconds": 0.5200000000000002,
+        "method": "estimated",
+        "uncertainty_s": 0.01,
+        "source": "device_latency:device_time"
+      }
+    },
+    {
+      "check": "recording_continuous_through_prompt",
+      "status": "PASS",
+      "detail": "38400 frames written, gaps=0",
+      "integrity": {
+        "name": "microphone",
+        "sample_rate": 48000.0,
+        "frames_written": 38400,
+        "device_frames": 38400,
+        "frames_lost_estimate": 0,
+        "gaps": [],
+        "segments": 1,
+        "status_flags": {},
+        "measured_rate": null,
+        "drift_ppm": null,
+        "continuous": true
+      }
+    },
+    {
+      "check": "recording_finalized_atomically",
+      "status": "PASS",
+      "detail": "published=True sha256=8b02dac662c374bc..."
+    },
+    {
+      "check": "playback_stream",
+      "status": "PASS",
+      "detail": "opened at 48000 Hz, blocksize 480, device-reported output latency 22.0 ms",
+      "reported_output_latency_ms": 22.0,
+      "block_timing_method": [
+        "device_time"
+      ]
+    },
+    {
+      "check": "commit_delay_after_deadline",
+      "status": "PASS",
+      "detail": "commit 0.37 ms after the deadline; estimated audible onset 10.37 ms after it",
+      "commit_delay_ms": 0.368200009688735,
+      "estimated_onset_delay_ms": 10.36820001900196,
+      "onset_method": "estimated",
+      "onset_uncertainty_ms": 10.0
+    },
+    {
+      "check": "callback_cadence",
+      "status": "PASS",
+      "detail": "193 callbacks; interval median 10.52 ms (nominal 10.00 ms), max 14.47 ms",
+      "callbacks": 193,
+      "median_interval_ms": 10.520499985432252,
+      "max_interval_ms": 14.472500013653189,
+      "nominal_interval_ms": 10.0,
+      "underruns": 0
+    },
+    {
+      "check": "acoustic_onset",
+      "status": "NOT_RUN",
+      "detail": "no acoustic reference channel: audible onset is an estimate from the device latency report, not a measurement. Needs a microphone or loopback capture of the output (goal.md section 7)."
+    },
+    {
+      "check": "duplex_capture",
+      "status": "NOT_RUN",
+      "detail": "run with --duplex --allow-microphone"
+    }
+  ],
+  "summary": {
+    "PASS": 11,
+    "NOT_RUN": 2
+  },
+  "verdict": "PASS"
+}

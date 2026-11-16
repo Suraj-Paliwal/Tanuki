@@ -1,0 +1,28 @@
+# Nothing in here is research data. Research sessions are written to the
+# configured research-data root outside this repository (goal.md section 10).
+__pycache__/
+.venv/
+*.pyc
+
+# Isolated scratch for stimulus preparation (M2). Reviewed stimuli are
+# published under stimuli/ instead; .preparation/ is throwaway.
+.preparation/
+
+# Downloaded runtimes, engines, models and renderer vendor bundles.
+runtime/
+vendor/
+model/
+*.7z
+*.tgz
+*.onnx
+*.gguf
+
+# Recordings and partial recordings must never be committed, even by accident.
+*.wav
+*.wav.partial
+*.jsonl
+*.log
+*.pid
+
+# Scratch patch scripts used during development.
+.patch_tmp*.py

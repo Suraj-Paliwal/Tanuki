@@ -1,8 +1,54 @@
 # Tanuki experiment and local conversation
 
-Status: planning and design review only. No experiment controller, model runtime or chat interface has been implemented in this folder.
+Status: M1 in progress. The timing core and the native audio capture/playback
+layer exist and are under independent review (`M1-audio-001`). There is still
+no experiment state machine, voice-activity detection, stimulus manifest,
+server, user interface, model runtime or chat interface in this folder, and no
+participant may be run on what exists. The device/timing layer is in
+fix-verification review after an independent review found eight Major defects,
+all since fixed; the session preflight has not been independently reviewed yet.
 
 Start with [goal.md](goal.md), the current development specification. It prioritizes the prerecorded story-recall experiment, followed by a separate local conversation mode.
+
+## Running the current checks
+
+Python 3.13 with `pip install -r requirements.txt` (numpy, sounddevice). From
+this folder:
+
+```text
+python -m unittest discover -s tests -p "test_*.py"   # 139 tests, no devices
+python tools/check_audio.py                           # device inventory + synthetic
+python preflight.py --config config/experiment.json   # session preflight
+```
+
+The [session preflight](preflight.py) is the start-of-session step `goal.md` §6
+requires: it pins audio devices by identity, measures this configuration's
+timing, checks disk space and verifies stimulus hashes, and writes the
+measurements into the session record. Timing worse than the configured target
+is recorded as a warning rather than refusing the session, so measurements
+accumulate from real runs instead of a tolerance being guessed up front. **The
+microphone is only opened when `preflight.check_capture` is enabled**, which it
+is not by default.
+
+The test suite and `tools/check_audio.py` with no flags open no audio device
+beyond querying it, and neither records. The preflight does open the configured
+output stream and plays a faint probe tone. The remaining modes of
+`tools/check_audio.py` touch hardware too: `--survey` and `--commit-trials N`
+open an output stream and emit silence, `--playback` plays an audible test
+tone, and `--duplex --allow-microphone` would open the microphone.
+
+Two measured facts about this PC, recorded in
+[validation/audio_spike.md](validation/audio_spike.md):
+
+- **No input device is attached.** Continuous recording cannot be opened here,
+  so microphone-side behaviour is currently verified only on the fake backend
+  and acoustic onset measurement is `NOT_RUN`.
+- **The Windows default output device is too slow** for the candidate timing
+  target: estimated onset delay p95 ≈ 191 ms on MME against ≈ 30 ms on WASAPI,
+  where 100 ms is the proposal in `goal.md` §7. Device choice is recorded as
+  [decision D5](decisions.md). (An earlier version of this file quoted 233 and
+  70 ms; those figures were inflated by a probe-clip artifact that independent
+  review caught, and are corrected here.)
 
 - [Elephant–Goldfish review](ELEPHANT_GOLDFISH_REVIEW.md): fresh-context findings, dispositions and remaining readiness gates.
 - [Six candidate dialogue stories](EXPERIMENT_STORIES_DRAFT.md): draft materials requiring review; three reference stories and one practice story remain to be prepared.
@@ -14,6 +60,7 @@ Start with [goal.md](goal.md), the current development specification. It priorit
 - [Elephant role](reviewers/ELEPHANT.md) and [Goldfish reviewer prompt](reviewers/GOLDFISH.md): reusable instructions for the implementer and independent reviewer.
 - [Development status](DEVELOPMENT_STATUS.md): current milestone and next step.
 - [Review index](reviews/INDEX.md) and [packet template](reviews/CHECKPOINT_TEMPLATE.md): evidence and review records.
+- [Engineering decisions](decisions.md): implementation choices D1-D8, their alternatives, and which research decisions they depend on.
 - [AGENTS.md](AGENTS.md): folder-level instructions for coding agents that support automatic discovery.
 - [Workflow validation](reviews/WORKFLOW_VALIDATION.md): review outcome and checks for these reusable instructions.
 
@@ -62,4 +109,7 @@ The memory capacity looks promising, but this is not a compatibility or speed te
 - Official model card and serving examples: https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-4GB
 - Existing project: ../08_avisspeech/README.md and ../08_avisspeech/ARCHITECTURE.md
 
-Current next milestone: validate local audio capture, playback timing, completion handling and avatar synchronization with synthetic fixtures. Nemotron compatibility testing belongs to the later conversation milestone.
+Current next milestone: finish M1. The timing core and device layer are built
+and under review; the avatar clock adapter against the real renderer, and any
+measurement needing a microphone, are still outstanding. Nemotron compatibility
+testing belongs to the later conversation milestone.

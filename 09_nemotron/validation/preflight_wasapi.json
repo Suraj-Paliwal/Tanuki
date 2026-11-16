@@ -1,0 +1,210 @@
+{
+  "session_id": "m1-preflight-evidence",
+  "started_at_utc": "2026-11-16T18:18:45Z",
+  "environment": {
+    "python": "3.13.9",
+    "platform": "Windows-11-10.0.26300-SP0",
+    "machine": "AMD64",
+    "numpy": "2.3.5",
+    "sounddevice": "0.5.5",
+    "portaudio": "PortAudio V19.7.0-devel, revision unknown",
+    "config": {
+      "session_id": "m1-preflight-evidence",
+      "samplerate": 48000,
+      "blocksize": 480,
+      "channels": 1,
+      "output_device_key": "Windows WASAPI|VZ239 (NVIDIA High Definition Audio)|0in/2out",
+      "input_device_key": null,
+      "output_device_index": null,
+      "input_device_index": null,
+      "max_onset_delay_ms": 100.0,
+      "max_onset_delay_is_frozen_tolerance": false,
+      "timing_blocking": false,
+      "commit_trials": 20,
+      "check_capture": false,
+      "capture_seconds": 2.0,
+      "detector_profile": {
+        "detector": "unset",
+        "sample_rate": 16000.0,
+        "frame_ms": 32.0,
+        "speech_threshold": 0.5,
+        "exit_threshold": 0.35,
+        "min_speech_ms": 96.0,
+        "hangover_ms": 150.0
+      },
+      "thresholds": [
+        0.5,
+        1.0,
+        2.0
+      ],
+      "data_root": null,
+      "min_free_gb": 5.0,
+      "stimulus_manifest": null
+    }
+  },
+  "checks": [
+    {
+      "check": "output_device",
+      "status": "PASS",
+      "detail": "pinned output device resolved to index 8 (Windows WASAPI)",
+      "blocking": false,
+      "blocks_session": false,
+      "device_index": 8,
+      "device_key": "Windows WASAPI|VZ239 (NVIDIA High Definition Audio)|0in/2out",
+      "pinned": true,
+      "hostapi": "Windows WASAPI"
+    },
+    {
+      "check": "input_device",
+      "status": "NOT_RUN",
+      "detail": "capture check disabled; no input device was resolved or opened",
+      "blocking": false,
+      "blocks_session": false
+    },
+    {
+      "check": "device_inventory",
+      "status": "WARN",
+      "detail": "no default input device: PortAudio reports default_input_device < 0 for the default host API, so recording requires an explicitly pinned device; 2 input-capable device(s) exist but none is the default: 13 'Headset (@System32\\\\drivers\\\\bthhfenum.sys,#2;%1 Hands-Free%0  ;(YYK-Q80.))' (Windows WDM-KS), 15 'Headset (@System32\\\\drivers\\\\bthhfenum.sys,#2;%1 Hands-Free%0  ;(OnePlus Nord Buds 3 Pro))' (Windows WDM-KS)",
+      "blocking": false,
+      "blocks_session": false,
+      "warnings": [
+        "no default input device: PortAudio reports default_input_device < 0 for the default host API, so recording requires an explicitly pinned device",
+        "2 input-capable device(s) exist but none is the default: 13 'Headset (@System32\\\\drivers\\\\bthhfenum.sys,#2;%1 Hands-Free%0  ;(YYK-Q80.))' (Windows WDM-KS), 15 'Headset (@System32\\\\drivers\\\\bthhfenum.sys,#2;%1 Hands-Free%0  ;(OnePlus Nord Buds 3 Pro))' (Windows WDM-KS)"
+      ],
+      "default_capture_available": false,
+      "capture_possible": true
+    },
+    {
+      "check": "detector_profile",
+      "status": "PASS",
+      "detail": "hangover 150 ms + 10 ms decision budget < shortest threshold 0.5 s",
+      "blocking": false,
+      "blocks_session": false,
+      "profile": {
+        "detector": "unset",
+        "sample_rate": 16000.0,
+        "frame_ms": 32.0,
+        "speech_threshold": 0.5,
+        "exit_threshold": 0.35,
+        "min_speech_ms": 96.0,
+        "hangover_ms": 150.0
+      },
+      "thresholds": [
+        0.5,
+        1.0,
+        2.0
+      ],
+      "note": "band dwell is data-dependent and is bounded at runtime by the pause timer's lateness budget, not by this static check"
+    },
+    {
+      "check": "disk_space",
+      "status": "NOT_RUN",
+      "detail": "no research-data root configured; sessions must write outside the repository and the web root (goal.md section 10)",
+      "blocking": false,
+      "blocks_session": false
+    },
+    {
+      "check": "stimulus_hashes",
+      "status": "NOT_RUN",
+      "detail": "no stimulus manifest configured; frozen materials are M2 and the research materials are not finalized",
+      "blocking": false,
+      "blocks_session": false
+    },
+    {
+      "check": "output_stream",
+      "status": "PASS",
+      "detail": "48000 Hz, blocksize 480, device-reported latency 22.0 ms",
+      "blocking": false,
+      "blocks_session": false,
+      "reported_output_latency_ms": 22.0,
+      "block_timing_method": [
+        "device_time"
+      ]
+    },
+    {
+      "check": "no_early_output",
+      "status": "PASS",
+      "detail": "0 of 20 commitments landed before their deadline",
+      "blocking": true,
+      "blocks_session": false,
+      "early": 0,
+      "trials": 20
+    },
+    {
+      "check": "commit_delay",
+      "status": "PASS",
+      "detail": "n=20 median 7.01 ms, p95 9.72 ms, max 10.23 ms",
+      "blocking": false,
+      "blocks_session": false,
+      "n": 20,
+      "median_ms": 7.008599961409345,
+      "p95_ms": 9.715599997434765,
+      "max_ms": 10.225299978628755
+    },
+    {
+      "check": "device_offset",
+      "status": "PASS",
+      "detail": "median 10.00 ms (buffer time minus commit instant)",
+      "blocking": false,
+      "blocks_session": false,
+      "median_ms": 10.000000009313226,
+      "max_ms": 10.000000009313226,
+      "method": "estimated"
+    },
+    {
+      "check": "onset_delay_target",
+      "status": "PASS",
+      "detail": "estimated p95 onset delay 29.72 ms vs the 100 ms configured target (within target; this is a device-latency estimate, not an acoustic measurement, and the target is a proposal rather than a frozen tolerance)",
+      "blocking": false,
+      "blocks_session": false,
+      "p95_ms": 29.715600016061217,
+      "median_ms": 27.008599980035797,
+      "max_ms": 30.225299997255206,
+      "target_ms": 100.0,
+      "meets_target": true,
+      "method": "estimated",
+      "components_median_ms": {
+        "commit_delay": 7.008599961409345,
+        "device_offset": 10.000000009313226,
+        "clip_leading_silence": 10.0
+      }
+    },
+    {
+      "check": "callback_cadence",
+      "status": "PASS",
+      "detail": "328 callbacks, median 10.37 ms, max 14.70 ms (nominal 10.00 ms)",
+      "blocking": false,
+      "blocks_session": false,
+      "callbacks": 328,
+      "median_interval_ms": 10.369899973738939,
+      "max_interval_ms": 14.700200001243502,
+      "nominal_interval_ms": 10.0,
+      "underruns": 0
+    },
+    {
+      "check": "acoustic_onset",
+      "status": "NOT_RUN",
+      "detail": "no acoustic reference channel configured: every onset figure in this session is an estimate from the device latency report, not a measurement (goal.md section 7)",
+      "blocking": false,
+      "blocks_session": false
+    },
+    {
+      "check": "capture_stream",
+      "status": "NOT_RUN",
+      "detail": "capture check disabled in configuration; the microphone was not opened",
+      "blocking": false,
+      "blocks_session": false
+    }
+  ],
+  "summary": {
+    "PASS": 8,
+    "NOT_RUN": 5,
+    "WARN": 1
+  },
+  "verdict": "INCOMPLETE_WITH_WARNINGS",
+  "may_start": true,
+  "blocking_checks": [],
+  "warning_checks": [
+    "device_inventory"
+  ]
+}
