@@ -532,11 +532,23 @@ class FakeStream:
         # PortAudio's stream clock: starts at zero and advances by exactly one
         # block per block, regardless of when the callback actually runs.
         self._device_time = 0.0
+        # Controller time at device time zero. On the real backend the block's
+        # controller-domain time is ``device_time + (entry - currentTime)``,
+        # i.e. the device clock plus an epoch offset in which callback
+        # lateness cancels out; this models that. Set at start().
+        self._epoch: float | None = None
 
     def start(self) -> None:
         if self.closed:
             raise AudioFault("stream already closed")
         self.active = True
+        if self._epoch is None:
+            now = self.backend.clock.now()
+            # An input block's first frame reached the ADC one latency before
+            # the stream clock says so; an output block reaches the DAC one
+            # latency after.
+            self._epoch = (now - self.latency if self.kind == "input"
+                           else now + self.latency)
 
     def stop(self) -> None:
         self.active = False
@@ -586,9 +598,13 @@ class FakeStream:
                 method: str = "device_time", jitter_s: float = 0.0) -> None:
         """One callback at the current clock time, without advancing the clock.
 
-        ``jitter_s`` delays only the callback *entry*, leaving the device clock
-        untouched - the real asymmetry, and the reason gap detection must not
-        be built on entry time.
+        ``jitter_s`` delays only the callback *entry*. In ``device_time`` mode
+        that is exactly what the real backend sees: the controller estimate of
+        the block is derived from the device clock plus a stable epoch offset,
+        so lateness does not reach ``first_frame_time`` at all. In ``fallback``
+        mode there is no device clock, the estimate is taken from entry time,
+        and the lateness flows straight into it - which is why that basis
+        cannot support a tight gap tolerance.
         """
         if not self.active:
             raise AudioFault("pump on an inactive stream")
@@ -598,9 +614,12 @@ class FakeStream:
         self._device_time += block_s
         entry = clock.now() + jitter_s
         if self.kind == "input":
-            # The block just finished arriving: its first frame is one block
-            # in the past, offset further by the input latency.
-            first = entry - block_s - self.latency
+            if device_time is not None:
+                first = self._epoch + device_time
+            else:
+                # Fallback: the block just finished arriving, so its first
+                # frame is one block in the past, further offset by latency.
+                first = entry - block_s - self.latency
             data = (np.zeros((self.blocksize, self.channels), np.int16)
                     if source is None else np.asarray(source(self.blocksize)))
             if data.ndim == 1:
@@ -614,7 +633,8 @@ class FakeStream:
             self._callback(data.astype(np.int16), timing, status if not overflow
                            else (status or "input overflow"))
         else:
-            first = entry + self.latency
+            first = (self._epoch + device_time if device_time is not None
+                     else entry + self.latency)
             out = np.zeros((self.blocksize, self.channels), np.int16)
             timing = BlockTiming(entry, first, method, self.latency,
                                  device_time=device_time)
@@ -831,6 +851,14 @@ class ContinuousRecorder:
             self.ledger.record(kind, at=self.clock.now(), stream=self.name, **fields)
 
     def _fault(self, kind: str, detail: str, *, fatal: bool = True) -> FaultRecord:
+        """Record a fault and notify the controller.
+
+        Audio-thread contract for ``on_fault`` (and for the ledger write
+        here): this can run inside the PortAudio callback. The handler must
+        not block, take a lock a slow holder might own, do I/O, or raise - it
+        should set flags and return; the controller reads ``faults`` and the
+        ledger on its own thread. The same applies to ``OutputPlayer``.
+        """
         rec = FaultRecord(kind=kind, detail=detail, at=self.clock.now(), fatal=fatal)
         self.faults.append(rec)
         self._log("audio_fault", fault=rec.as_record())
@@ -983,8 +1011,7 @@ class ContinuousRecorder:
         # has counted them, so the shortfall is only knowable here.
         shortfall = self.timeline.frames_written - self.timeline.frames_persisted
         if shortfall > 0:
-            gap = self.timeline.note_not_persisted(
-                shortfall, self.clock.now(), kind="writer_shortfall")
+            gap = self.timeline.note_tail_shortfall(shortfall, self.clock.now())
             self._fault("recording_shortfall",
                         f"{shortfall} frames were delivered but never written",
                         fatal=False)
@@ -1218,9 +1245,21 @@ class OutputPlayer:
 
     # -- immediate playback (story, instruction, bench tone)
 
+    def _require_attempt(self, what: str) -> None:
+        """Per-attempt scoping is not optional.
+
+        C4's fix lives in ``begin_attempt``; a controller that forgot to call
+        it would silently inherit the previous trial's prompt bookkeeping
+        (R03-F07). So the slot cannot be used outside an attempt.
+        """
+        if self.attempt is None:
+            raise AudioFault(
+                f"cannot {what}: no attempt has begun; call begin_attempt() first")
+
     def play(self, clip: Clip, *, kind: str = "stimulus") -> int:
         """Start a clip at the next callback. Returns its generation number."""
         self._check_clip(clip)
+        self._require_attempt("play")
         with self._lock:
             if self.state == _PLAYING:
                 raise AudioFault(
@@ -1248,6 +1287,11 @@ class OutputPlayer:
         trigger requirement structural rather than a matter of timer accuracy.
         """
         self._check_clip(clip)
+        self._require_attempt("arm")
+        if candidate.trial_id != self.attempt:
+            raise AudioFault(
+                f"candidate belongs to {candidate.trial_id!r} but the current "
+                f"attempt is {self.attempt!r}")
         with self._lock:
             if self.state == _PLAYING:
                 raise AudioFault("cannot arm a prompt while output is playing")
@@ -1418,13 +1462,23 @@ class OutputPlayer:
         # a silent probe clip inflated every reported onset by the clip length.
         device_offset = timing.first_frame_time - now
         lead = clip.leading_silence_s
+        # Two estimators of the device latency exist and were seen to disagree
+        # by ~12 ms on WASAPI: the stream's reported latency and the per-block
+        # DAC offset. The recorded half-width must cover that disagreement,
+        # not just the block quantisation (R03-F10a). Both readings travel in
+        # the record so the calibration can later say which was right.
+        reported = self.latency_s
+        disagreement = abs(reported - device_offset) if reported else 0.0
+        uncertainty = max(self.blocksize / self.samplerate, disagreement)
+        lead = clip.leading_silence_s
         onset: Estimate | None = None
         if lead is not None:
             onset = Estimate(
                 seconds=timing.first_frame_time + lead,
                 method=ESTIMATED,
-                uncertainty_s=self.blocksize / self.samplerate,
-                source=f"device_latency:{timing.method}",
+                uncertainty_s=uncertainty,
+                source=f"device_latency:{timing.method};"
+                       f"reported={reported:.4f};per_block={device_offset:.4f}",
             )
         cand.commit(now, onset)
         cand.device_offset_s = device_offset
@@ -1443,6 +1497,8 @@ class OutputPlayer:
                   audible_onset=onset,
                   buffer_time=timing.first_frame_time,
                   device_offset_s=device_offset,
+                  reported_latency_s=reported,
+                  latency_disagreement_s=disagreement,
                   leading_silence_s=lead,
                   clip_has_audible_onset=clip.has_audible_onset,
                   timing_method=timing.method, candidate=cand.as_record())

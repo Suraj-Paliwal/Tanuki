@@ -409,9 +409,11 @@ def commit_distribution(*, trials: int = 30, device=None,
     onset_delays: list[float] = []
     device_offsets: list[float] = []
     leads: list[float] = []
+    skipped_no_onset = 0
     early = 0
     try:
         for i in range(trials):
+            player.begin_attempt(f"probe-{i}")
             deadline = clock.now() + 0.08
             cand = PromptCandidate(trial_id=f"probe-{i}", threshold_s=0.5,
                                    deadline=deadline, scheduled_at=clock.now())
@@ -425,9 +427,15 @@ def commit_distribution(*, trials: int = 30, device=None,
             if delay < 0:
                 early += 1
             commit_delays.append(delay)
-            device_offsets.append((cand.device_offset_s or 0.0) * 1000.0)
-            leads.append((cand.clip_leading_silence_s or 0.0) * 1000.0)
-            onset_delays.append((cand.onset_delay_s or 0.0) * 1000.0)
+            # A probe without an onset estimate is dropped from the onset
+            # distribution and counted, never recorded as zero (R03-F10c).
+            if (cand.onset_delay_s is None or cand.device_offset_s is None
+                    or cand.clip_leading_silence_s is None):
+                skipped_no_onset += 1
+            else:
+                device_offsets.append(cand.device_offset_s * 1000.0)
+                leads.append(cand.clip_leading_silence_s * 1000.0)
+                onset_delays.append(cand.onset_delay_s * 1000.0)
             # Let the clip finish before arming the next one.
             while player.state != "idle" and clock.now() < limit:
                 time.sleep(0.002)
@@ -435,7 +443,6 @@ def commit_distribution(*, trials: int = 30, device=None,
             if outcome.outcome not in ("too_late_committed", "nothing_armed"):
                 return [_result("commit_distribution", FAIL,
                                 f"probe {i} ended in state {outcome.outcome}")]
-            player.begin_attempt(f"probe-{i + 1}")
     finally:
         player.stop("probe_complete")
         player.close()
@@ -459,6 +466,12 @@ def commit_distribution(*, trials: int = 30, device=None,
         max_ms=max(commit_delays),
         min_ms=min(commit_delays)))
     p95 = _percentile(onset_delays, 0.95)
+    if not onset_delays:
+        out.append(_result(
+            "estimated_onset_delay_distribution", NOT_RUN,
+            f"no probe produced an onset estimate ({skipped_no_onset} skipped)",
+            skipped=skipped_no_onset))
+        return out
     out.append(_result(
         "device_offset_distribution", PASS,
         f"n={trials} device offset median "
@@ -477,7 +490,8 @@ def commit_distribution(*, trials: int = 30, device=None,
         f"{statistics.median(device_offsets):.2f} + clip lead "
         f"{statistics.median(leads):.2f} (medians) - device-latency estimate, "
         f"not acoustic",
-        n=trials,
+        n=len(onset_delays),
+        skipped_no_onset=skipped_no_onset,
         median_ms=statistics.median(onset_delays),
         p95_ms=p95,
         max_ms=max(onset_delays),
@@ -503,22 +517,28 @@ def commit_distribution(*, trials: int = 30, device=None,
     return out
 
 
-def duplex_check(*, allow_microphone: bool, seconds: float = 2.0) -> list[dict]:
+def duplex_check(*, allow_microphone: bool, seconds: float = 2.0,
+                 input_device=None) -> list[dict]:
     if not allow_microphone:
         return [_result("duplex_capture", BLOCKED,
                         "live microphone capture needs --allow-microphone; "
                         "not run")]
     info = inventory()
-    if not info.get("capture_available"):
+    if input_device is None and not info.get("default_capture_available"):
         return [_result("duplex_capture", BLOCKED,
-                        "no input device available: " + "; ".join(info.get("warnings", [])))]
+                        "no default input device; pass --input-device to use "
+                        "one of: " + ", ".join(info.get("input_devices", []))
+                        if info.get("capture_possible") else
+                        "no input-capable device: "
+                        + "; ".join(info.get("warnings", [])))]
     clock = MonotonicClock()
     ledger = TimingLedger(clock=clock)
     backend = SoundDeviceBackend(clock)
     with tempfile.TemporaryDirectory() as tmp:
         rec = ContinuousRecorder(Path(tmp) / "duplex.wav", backend=backend,
                                  clock=clock, samplerate=CAPTURE_RATE,
-                                 blocksize=DEFAULT_BLOCKSIZE, ledger=ledger)
+                                 blocksize=DEFAULT_BLOCKSIZE, ledger=ledger,
+                                 device=input_device)
         rec.start()
         time.sleep(seconds)
         result = rec.finalize()
@@ -552,6 +572,9 @@ def main(argv=None) -> int:
     ap.add_argument("--blocksize", type=int, default=DEFAULT_BLOCKSIZE)
     ap.add_argument("--device", default=None,
                     help="output device index or name for --playback")
+    ap.add_argument("--input-device", default=None,
+                    help="input device index for --duplex (needed when no "
+                         "default input exists)")
     ap.add_argument("--out", default=None, help="write the JSON report here")
     args = ap.parse_args(argv)
 
@@ -579,7 +602,11 @@ def main(argv=None) -> int:
         report["checks"].append(_result(
             "playback_stream", NOT_RUN,
             "run with --playback to open the real output device"))
-    report["checks"].extend(duplex_check(allow_microphone=args.allow_microphone)
+    input_device = args.input_device
+    if input_device is not None and str(input_device).lstrip("-").isdigit():
+        input_device = int(input_device)
+    report["checks"].extend(duplex_check(allow_microphone=args.allow_microphone,
+                                         input_device=input_device)
                             if args.duplex else
                             [_result("duplex_capture", NOT_RUN,
                                      "run with --duplex --allow-microphone")])

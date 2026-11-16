@@ -19,6 +19,8 @@ from timing import (  # noqa: E402
     DEFAULT_PROFILE,
     ESTIMATED,
     MEASURED,
+    ORIGIN_LAST_STRONG,
+    ORIGIN_RUN_END,
     SPEECH_OFFSET,
     SPEECH_ONSET,
     CaptureTimeline,
@@ -122,21 +124,45 @@ class StreamTimebaseTest(unittest.TestCase):
 
 
 class CaptureTimelineTest(unittest.TestCase):
+    EPOCH = 100.0   # controller time at device time zero
+
     def _contiguous(self, blocks=5, block=480, t0=0.0, tolerance=None):
+        """Blocks on the device-clock basis, as a real PortAudio stream gives."""
         tl = CaptureTimeline(RATE, gap_tolerance_s=tolerance) if tolerance \
             else CaptureTimeline(RATE)
         for i in range(blocks):
-            tl.note_block(block, t0 + i * block / RATE)
+            device_time = t0 + i * block / RATE
+            tl.note_block(block, self.EPOCH + device_time, device_time=device_time)
             tl.note_persisted(block)       # the writer thread confirms the bytes
         return tl
 
     def test_contiguous_mapping_is_linear(self):
         tl = self._contiguous()
         self.assertEqual(tl.frames_written, 2400)
-        self.assertAlmostEqual(tl.sample_to_time(0), 0.0, places=9)
-        self.assertAlmostEqual(tl.sample_to_time(2400), 0.05, places=9)
+        self.assertAlmostEqual(tl.sample_to_time(0), self.EPOCH, places=9)
+        self.assertAlmostEqual(tl.sample_to_time(2400), self.EPOCH + 0.05,
+                               places=9)
         self.assertTrue(tl.integrity()["continuous"])
+        self.assertEqual(tl.integrity()["gap_basis"], "device_clock")
         self.assertEqual(tl.frames_lost, 0)
+
+    def test_continuity_is_not_asserted_on_the_callback_time_basis(self):
+        """Without a device clock a lost block up to the tolerance is invisible.
+
+        The code comment admitted this; the field a consumer reads did not
+        (R03-F03a). "continuous" now requires a basis that could have seen a
+        lost block, and the record says what it could not see.
+        """
+        tl = CaptureTimeline(RATE)
+        for i in range(5):
+            tl.note_block(480, i * 480 / RATE)      # no device_time
+            tl.note_persisted(480)
+        integrity = tl.integrity()
+        self.assertEqual(integrity["gap_basis"], "callback_time")
+        self.assertFalse(integrity["continuity_supported_by_basis"])
+        self.assertAlmostEqual(integrity["undetectable_gap_s"], 0.080)
+        self.assertEqual(integrity["gaps"], [])
+        self.assertFalse(integrity["continuous"])
 
     def test_an_unknown_persisted_count_is_not_continuous(self):
         """A timeline that was never told what reached disk cannot claim continuity."""
@@ -167,7 +193,8 @@ class CaptureTimelineTest(unittest.TestCase):
     def test_a_late_block_records_a_gap_instead_of_inventing_silence(self):
         tl = self._contiguous(blocks=2)
         # Third block arrives 100 ms late: 4800 frames never reached the file.
-        gap = tl.note_block(480, 2 * 480 / RATE + 0.1)
+        late = 2 * 480 / RATE + 0.1
+        gap = tl.note_block(480, self.EPOCH + late, device_time=late)
         self.assertIsNotNone(gap)
         self.assertEqual(gap.file_sample, 960)
         self.assertEqual(gap.frames_lost, 4800)
@@ -179,32 +206,37 @@ class CaptureTimelineTest(unittest.TestCase):
 
     def test_mapping_stays_correct_on_both_sides_of_a_gap(self):
         tl = self._contiguous(blocks=2)
-        tl.note_block(480, 2 * 480 / RATE + 0.1)
-        self.assertAlmostEqual(tl.sample_to_time(480), 0.01, places=9)
-        self.assertAlmostEqual(tl.sample_to_time(960), 0.12, places=9)
-        self.assertAlmostEqual(tl.sample_to_time(1440), 0.13, places=9)
+        late = 2 * 480 / RATE + 0.1
+        tl.note_block(480, self.EPOCH + late, device_time=late)
+        e = self.EPOCH
+        self.assertAlmostEqual(tl.sample_to_time(480), e + 0.01, places=9)
+        self.assertAlmostEqual(tl.sample_to_time(960), e + 0.12, places=9)
+        self.assertAlmostEqual(tl.sample_to_time(1440), e + 0.13, places=9)
 
     def test_time_inside_a_gap_is_flagged(self):
         tl = self._contiguous(blocks=2)
-        tl.note_block(480, 2 * 480 / RATE + 0.1)
-        sample, in_gap = tl.time_to_sample(0.05)
+        late = 2 * 480 / RATE + 0.1
+        tl.note_block(480, self.EPOCH + late, device_time=late)
+        sample, in_gap = tl.time_to_sample(self.EPOCH + 0.05)
         self.assertTrue(in_gap)
         self.assertEqual(sample, 960)
-        sample, in_gap = tl.time_to_sample(0.005)
+        sample, in_gap = tl.time_to_sample(self.EPOCH + 0.005)
         self.assertFalse(in_gap)
         self.assertEqual(sample, 240)
 
     def test_overflow_status_opens_a_gap_even_without_a_time_jump(self):
         tl = self._contiguous(blocks=2)
-        gap = tl.note_block(480, 2 * 480 / RATE, overflowed=True,
-                            status="input overflow")
+        at = 2 * 480 / RATE
+        gap = tl.note_block(480, self.EPOCH + at, device_time=at,
+                            overflowed=True, status="input overflow")
         self.assertIsNotNone(gap)
         self.assertEqual(gap.kind, "input_overflow")
         self.assertEqual(tl.status_flags["input overflow"], 1)
 
     def test_small_jitter_is_not_a_gap(self):
         tl = self._contiguous(blocks=2)
-        gap = tl.note_block(480, 2 * 480 / RATE + 0.0005)
+        at = 2 * 480 / RATE
+        gap = tl.note_block(480, self.EPOCH + at + 0.0005, device_time=at)
         self.assertIsNone(gap)
         self.assertEqual(len(tl.segments), 1)
 
@@ -219,16 +251,24 @@ class CaptureTimelineTest(unittest.TestCase):
         tl = CaptureTimeline(RATE)
         block = 480
         block_s = block / RATE
-        jitter = [0.0, 0.030, 0.0, 0.038, 0.0, 0.012, 0.0, 0.039]
+        # The first block is the *latest* one: the earlier minimum-biased
+        # estimator dropped the offset by 30 ms on block two and labelled time
+        # backwards (R03-F02). Note this models a perturbation of the observed
+        # offset itself; on the real backend callback lateness cancels out of
+        # that observation, so this is a robustness case, not the normal one.
+        jitter = [0.030, 0.0, 0.0, 0.038, 0.0, 0.012, 0.0, 0.039]
         for i, j in enumerate(jitter):
             device_time = i * block_s
             tl.note_block(block, device_time + j, device_time=device_time)
             tl.note_persisted(block)
         self.assertEqual(tl.gaps, [])
         integrity = tl.integrity()
+        self.assertEqual(integrity["clock_anomalies"], [])
         self.assertTrue(integrity["continuous"])
         self.assertEqual(integrity["gap_basis"], "device_clock")
         self.assertEqual(integrity["blocks_without_device_time"], 0)
+        times = [tl.sample_to_time(n) for n in range(0, 8 * block + 1, 48)]
+        self.assertEqual(times, sorted(times))    # never runs backwards
 
     def test_device_clock_drift_over_a_long_recording_is_not_a_gap(self):
         """A 1000 ppm fast device must not accumulate into fabricated losses.
@@ -291,6 +331,8 @@ class CaptureTimelineTest(unittest.TestCase):
         self.assertEqual(integrity["gap_basis"], "callback_time")
         self.assertEqual(integrity["blocks_with_device_time"], 0)
         self.assertEqual(tl.gaps, [])
+        # ...and therefore cannot claim continuity.
+        self.assertFalse(integrity["continuous"])
 
     def test_the_mapping_follows_the_real_rate_not_the_nominal_one(self):
         """sample_to_time interpolates between device-time anchors.
@@ -313,6 +355,88 @@ class CaptureTimelineTest(unittest.TestCase):
         # The nominal-rate answer would be ~60 ms out over this interval.
         self.assertGreater(abs(last_sample / RATE - end_time), 0.030)
 
+    def test_a_fallback_run_between_device_timed_blocks_is_not_a_gap(self):
+        """R03-F01: the host API stops and resumes reporting block times.
+
+        WDM-KS - the only host API with an input device on this PC - was seen
+        doing this in the survey. The stale device-clock reference from before
+        the fallback run must not be used to measure the first block after it,
+        or the whole run reads as lost audio.
+        """
+        tl = CaptureTimeline(RATE)
+        block = 480
+        block_s = block / RATE
+        k, m = 5, 7
+        for i in range(k):
+            tl.note_block(block, i * block_s, device_time=i * block_s)
+            tl.note_persisted(block)
+        for i in range(k, k + m):
+            tl.note_block(block, i * block_s)          # no device time
+            tl.note_persisted(block)
+        for i in range(k + m, 2 * k + m):
+            tl.note_block(block, i * block_s, device_time=i * block_s)
+            tl.note_persisted(block)
+        integrity = tl.integrity()
+        self.assertEqual(tl.gaps, [])
+        self.assertEqual(integrity["clock_anomalies"], [])
+        self.assertEqual(integrity["gap_basis"], "mixed")
+        self.assertEqual(tl.frames_written, (2 * k + m) * block)
+        self.assertEqual(integrity["frames_lost_estimate"], 0)
+        # Repeated flips must not accumulate either.
+        for round_ in range(3):
+            tl.note_block(block, 0.0)
+            tl.note_persisted(block)
+            tl.note_block(block, 0.0, device_time=(2 * k + m + round_) * block_s)
+            tl.note_persisted(block)
+        self.assertEqual(tl.gaps, [])
+
+    def test_a_device_clock_jump_is_an_anomaly_not_a_fabricated_loss(self):
+        """R03-F01 second case: a one-second forward step is not 48000 lost frames."""
+        tl = CaptureTimeline(RATE)
+        block = 480
+        block_s = block / RATE
+        for i in range(5):
+            tl.note_block(block, i * block_s, device_time=i * block_s)
+            tl.note_persisted(block)
+        jumped = 5 * block_s + 1.5
+        tl.note_block(block, jumped, device_time=jumped)
+        tl.note_persisted(block)
+        integrity = tl.integrity()
+        self.assertEqual(tl.gaps, [])
+        self.assertEqual(integrity["frames_lost_estimate"], 0)
+        self.assertEqual(len(integrity["clock_anomalies"]), 1)
+        self.assertEqual(integrity["clock_anomalies"][0]["kind"],
+                         "device_time_discontinuity")
+        self.assertFalse(integrity["continuous"])
+
+    def test_a_device_clock_running_backwards_is_still_a_real_anomaly(self):
+        """Estimator adjustments are clamped silently; a real clock fault is not."""
+        tl = CaptureTimeline(RATE)
+        block = 480
+        block_s = block / RATE
+        for i in range(5):
+            tl.note_block(block, i * block_s, device_time=i * block_s)
+            tl.note_persisted(block)
+        tl.note_block(block, 5 * block_s, device_time=5 * block_s - 0.5)
+        tl.note_persisted(block)
+        kinds = [a["kind"] for a in tl.integrity()["clock_anomalies"]]
+        self.assertIn("device_time_went_backwards", kinds)
+        self.assertFalse(tl.integrity()["continuous"])
+
+    def test_a_large_offset_correction_is_noted_but_is_not_a_clock_fault(self):
+        tl = CaptureTimeline(RATE)
+        block = 480
+        block_s = block / RATE
+        tl.note_block(block, 0.0 + 0.5, device_time=0.0)   # epoch observed 0.5
+        tl.note_persisted(block)
+        for i in range(1, 6):
+            tl.note_block(block, i * block_s, device_time=i * block_s)  # epoch 0
+            tl.note_persisted(block)
+        integrity = tl.integrity()
+        self.assertEqual(integrity["clock_anomalies"], [])
+        self.assertTrue(len(integrity["offset_steps"]) >= 1)
+        self.assertTrue(integrity["continuous"])
+
     def test_frames_the_recorder_dropped_are_a_counted_gap_not_a_shift(self):
         """Losing audio to a writer backlog must not move every later sample.
 
@@ -323,7 +447,7 @@ class CaptureTimelineTest(unittest.TestCase):
         """
         tl = self._contiguous(blocks=10)
         block = 480
-        drop_at_time = 10 * block / RATE
+        drop_at_time = self.EPOCH + 10 * block / RATE
         gap = tl.note_not_persisted(block, drop_at_time, kind="recorder_backlog")
         self.assertEqual(gap.file_sample, 10 * block)
         self.assertEqual(gap.frames_lost, block)
@@ -332,7 +456,8 @@ class CaptureTimelineTest(unittest.TestCase):
         # Nothing was added to the file for the dropped block.
         self.assertEqual(tl.frames_written, 10 * block)
         # The next delivered block resumes after the dropped interval.
-        tl.note_block(block, drop_at_time + block / RATE)
+        resume_device = 11 * block / RATE
+        tl.note_block(block, self.EPOCH + resume_device, device_time=resume_device)
         tl.note_persisted(block)
         integrity = tl.integrity()
         self.assertFalse(integrity["continuous"])
@@ -341,14 +466,15 @@ class CaptureTimelineTest(unittest.TestCase):
         self.assertEqual(len(integrity["gaps"]), 1)
         # Mapping is right on both sides of the loss.
         self.assertAlmostEqual(tl.sample_to_time(10 * block - 1),
-                               (10 * block - 1) / RATE, delta=0.001)
+                               self.EPOCH + (10 * block - 1) / RATE, delta=0.001)
         self.assertAlmostEqual(tl.sample_to_time(10 * block),
                                drop_at_time + block / RATE, delta=0.001)
 
     def test_a_clock_anomaly_makes_the_attempt_not_continuous(self):
         tl = self._contiguous(blocks=5)
-        # A block whose computed time precedes the previous block's end.
-        tl.note_block(480, 0.0)
+        # The device clock jumps back by half a second: a real anomaly.
+        tl.note_block(480, self.EPOCH + 5 * 480 / RATE,
+                      device_time=5 * 480 / RATE - 0.5)
         tl.note_persisted(480)
         integrity = tl.integrity()
         self.assertTrue(integrity["clock_anomalies"])
@@ -642,17 +768,56 @@ class HysteresisOffsetOriginTest(unittest.TestCase):
 
 
 class StaleDeadlineTest(unittest.TestCase):
-    """A deadline already long past must be flagged, not prompted through."""
+    """A deadline already long past must be flagged, not prompted through.
+
+    With a valid detector profile and a healthy timeline this cannot happen
+    through the segmenter: the offset is confirmed one hangover after it, and
+    the validator requires the hangover to be shorter than the threshold. The
+    reachable triggers are a capture-timeline gap between the last speech frame
+    and the confirming frame, and a real detector that buffers more than its
+    nominal hangover (R03-F08). The first is driven end-to-end below.
+    """
 
     def setUp(self):
-        self.profile = DetectorProfile(frame_ms=32.0, min_speech_ms=96.0,
-                                       hangover_ms=600.0, detector="synthetic")
+        self.profile = DEFAULT_PROFILE    # a profile the validator accepts
+        validate_detector_profile(self.profile, [0.5, 1.0, 2.0])
+
+    def test_a_timeline_gap_can_make_a_deadline_stale_through_the_segmenter(self):
+        """Frame times come from the capture timeline; a gap stretches them."""
+        tl = CaptureTimeline(RATE)
+        frame_s = self.profile.frame_s
+        frames_per_vad_frame = int(round(frame_s * RATE))
+        # 20 contiguous frames, then the recorder drops 0.8 s, then 10 more.
+        for i in range(20):
+            dt = i * frame_s
+            tl.note_block(frames_per_vad_frame, dt, device_time=dt)
+            tl.note_persisted(frames_per_vad_frame)
+        tl.note_not_persisted(int(0.8 * RATE), 20 * frame_s, kind="recorder_backlog")
+        for i in range(20, 30):
+            dt = i * frame_s + 0.8
+            tl.note_block(frames_per_vad_frame, dt, device_time=dt)
+            tl.note_persisted(frames_per_vad_frame)
+
+        # Detector frames index the *file*; their times come from the timeline.
+        resample = ResampleMap(RATE, self.profile.sample_rate)
+        seg = SpeechSegmenter(
+            self.profile, resample,
+            lambda i: tl.sample_to_time(i * frames_per_vad_frame))
+        timer = PauseTimer(0.5, profile=self.profile, lateness_budget_s=0.05)
+        # Speech through frame 19, then quiet; the hangover frames land after
+        # the 0.8 s hole, so the offset is confirmed far later than the
+        # hangover alone would imply.
+        for event in seg.push_all([0.9] * 20 + [0.0] * 8):
+            timer.note_event(event)
+        self.assertIsNotNone(timer.deadline)
+        self.assertGreater(timer.discovery_lateness, 0.05)
+        self.assertTrue(timer.too_late())
+        self.assertFalse(timer.eligible(timer.known_at()))
 
     def test_a_deadline_discovered_too_late_is_not_eligible(self):
+        """Direct form of the same guard, with hand-supplied times."""
         timer = PauseTimer(0.5, profile=self.profile, lateness_budget_s=0.05)
         timer.note_onset(0.0)
-        # Offset at 1.0 s but only confirmed at 1.8 s: the 1.5 s deadline was
-        # already 0.3 s in the past when the controller learned of it.
         timer.note_offset(1.0, 1.8)
         self.assertAlmostEqual(timer.deadline, 1.5, places=9)
         self.assertAlmostEqual(timer.discovery_lateness, 0.3, places=9)
@@ -667,6 +832,16 @@ class StaleDeadlineTest(unittest.TestCase):
         self.assertFalse(timer.too_late())
         self.assertTrue(timer.eligible(1.52))
 
+    def test_a_valid_profile_on_a_healthy_timeline_is_never_late(self):
+        resample = ResampleMap(RATE, self.profile.sample_rate)
+        seg = SpeechSegmenter(self.profile, resample,
+                              lambda i: i * self.profile.frame_s)
+        timer = PauseTimer(0.5, profile=self.profile)
+        for event in seg.push_all([0.9] * 10 + [0.0] * 8):
+            timer.note_event(event)
+        self.assertEqual(timer.discovery_lateness, 0.0)
+        self.assertFalse(timer.too_late())
+
     def test_the_normal_case_has_no_lateness_at_all(self):
         profile = DetectorProfile(hangover_ms=150.0, detector="synthetic")
         timer = PauseTimer(0.5, profile=profile)
@@ -674,6 +849,48 @@ class StaleDeadlineTest(unittest.TestCase):
         timer.note_offset(1.0, 1.15)      # confirmed well before 1.5 s
         self.assertEqual(timer.discovery_lateness, 0.0)
         self.assertFalse(timer.too_late())
+
+
+class SilenceOriginTest(unittest.TestCase):
+    """The origin of the silence interval is configuration, not code (R03-F09).
+
+    Both readings are recorded on every offset event; which one the live
+    deadline counts from is a research decision about the manipulation.
+    """
+
+    def setUp(self):
+        self.profile = DetectorProfile(frame_ms=32.0, min_speech_ms=96.0,
+                                       hangover_ms=160.0, detector="synthetic")
+        self.resample = ResampleMap(48_000, 16_000)
+        # Four strong frames, twenty band frames, then real silence.
+        self.sequence = [0.9] * 4 + [0.4] * 20 + [0.0] * 5
+
+    def _deadline(self, origin):
+        seg = SpeechSegmenter(self.profile, self.resample,
+                              lambda i: i * self.profile.frame_s)
+        timer = PauseTimer(0.5, profile=self.profile, origin=origin)
+        for event in seg.push_all(self.sequence):
+            timer.note_event(event)
+        return timer
+
+    def test_run_end_counts_from_the_end_of_the_band(self):
+        timer = self._deadline(ORIGIN_RUN_END)
+        self.assertAlmostEqual(timer.deadline, 24 * 0.032 + 0.5, places=9)
+
+    def test_last_strong_counts_from_the_last_loud_frame(self):
+        timer = self._deadline(ORIGIN_LAST_STRONG)
+        self.assertAlmostEqual(timer.deadline, 4 * 0.032 + 0.5, places=9)
+
+    def test_the_two_origins_differ_by_exactly_the_band_dwell(self):
+        a = self._deadline(ORIGIN_RUN_END).deadline
+        b = self._deadline(ORIGIN_LAST_STRONG).deadline
+        self.assertAlmostEqual(a - b, 20 * 0.032, places=9)
+
+    def test_the_origin_is_recorded_and_validated(self):
+        timer = PauseTimer(0.5, origin=ORIGIN_LAST_STRONG)
+        self.assertEqual(timer.as_record()["origin"], ORIGIN_LAST_STRONG)
+        with self.assertRaises(ValueError):
+            PauseTimer(0.5, origin="somewhere")
 
 
 class DefaultProfileTest(unittest.TestCase):

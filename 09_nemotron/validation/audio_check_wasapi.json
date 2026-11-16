@@ -1,4 +1,8 @@
 {
+  "superseded": true,
+  "superseded_reason": "single-shot --playback --device 8 run taken on the first commitment after the stream opened, before the device buffer had filled; its 10.37 ms onset figure must not be quoted (validation/audio_spike.md Finding 3)",
+  "superseded_by": "validation/audio_check_commit_wasapi.json and validation/audio_check_commit_default.json",
+  "verdict_note": "the 'verdict' below was stamped by a pre-fix tool that reported PASS despite NOT_RUN checks (round-1 finding C13); under the current ladder it would read INCOMPLETE",
   "tool": "tools/check_audio.py",
   "audio_io_module": "audio_io.py",
   "environment": {

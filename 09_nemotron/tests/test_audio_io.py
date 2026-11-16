@@ -253,6 +253,7 @@ class OutputPlayerTest(unittest.TestCase):
                                    samplerate=RATE, blocksize=BLOCK,
                                    ledger=self.ledger)
         self.player.open()
+        self.player.begin_attempt("T1")
         self.stream = self.backend.streams[-1]
 
     def tearDown(self):
@@ -261,6 +262,28 @@ class OutputPlayerTest(unittest.TestCase):
     def _candidate(self, deadline, **kw):
         return PromptCandidate(trial_id="T1", threshold_s=0.5, deadline=deadline,
                                scheduled_at=self.clock.now(), **kw)
+
+    def test_arming_outside_an_attempt_is_refused(self):
+        """Per-attempt scoping is not opt-in (R03-F07)."""
+        player = OutputPlayer(backend=self.backend, clock=self.clock,
+                              samplerate=RATE, blocksize=BLOCK)
+        player.open()
+        try:
+            clip = tone_clip(0.02, samplerate=RATE)
+            with self.assertRaises(AudioFault):
+                player.arm(clip, self._candidate(self.clock.now() + 1.0))
+            with self.assertRaises(AudioFault):
+                player.play(clip)
+        finally:
+            player.close()
+
+    def test_a_candidate_from_another_trial_is_refused(self):
+        clip = tone_clip(0.02, samplerate=RATE)
+        other = PromptCandidate(trial_id="T9", threshold_s=0.5,
+                                deadline=self.clock.now() + 1.0,
+                                scheduled_at=self.clock.now())
+        with self.assertRaises(AudioFault):
+            self.player.arm(clip, other)
 
     def test_idle_output_is_silence(self):
         self.stream.pump(5)
@@ -436,6 +459,7 @@ class AvatarClockTest(unittest.TestCase):
         self.player = OutputPlayer(backend=self.backend, clock=self.clock,
                                    samplerate=RATE, blocksize=BLOCK)
         self.player.open()
+        self.player.begin_attempt("avatar")
         self.stream = self.backend.streams[-1]
 
     def tearDown(self):
@@ -502,6 +526,7 @@ class RecordingContinuesThroughPromptTest(unittest.TestCase):
                                   blocksize=BLOCK, ledger=ledger)
             rec.start()
             player.open()
+            player.begin_attempt("T1")
             mic, out = backend.streams[0], backend.streams[1]
 
             clip = tone_clip(0.05, samplerate=RATE)
@@ -547,18 +572,30 @@ class OnsetEstimateComponentsTest(unittest.TestCase):
         self.player = OutputPlayer(backend=self.backend, clock=self.clock,
                                    samplerate=RATE, blocksize=BLOCK)
         self.player.open()
+        self.player.begin_attempt("T1")
         self.stream = self.backend.streams[-1]
 
     def tearDown(self):
         self.player.close()
 
     def _commit(self, clip):
-        cand = PromptCandidate(trial_id="T1", threshold_s=0.5,
+        cand = PromptCandidate(trial_id=self.player.attempt, threshold_s=0.5,
                                deadline=self.clock.now() + 0.02,
                                scheduled_at=self.clock.now())
         self.player.arm(clip, cand)
         self.stream.pump(10)
         return cand
+
+    def test_uncertainty_covers_the_disagreement_between_latency_sources(self):
+        """R03-F10a: the half-width must not be smaller than what is known."""
+        clip = tone_clip(0.05, samplerate=RATE)
+        # FakeStream reports the configured latency as stream.latency; the
+        # per-block offset equals it, so here they agree and the floor is one
+        # block.
+        cand = self._commit(clip)
+        self.assertGreaterEqual(cand.audible_onset.uncertainty_s, BLOCK / RATE)
+        self.assertIn("reported=", cand.audible_onset.source)
+        self.assertIn("per_block=", cand.audible_onset.source)
 
     def test_components_are_recorded_separately_and_sum_to_the_onset(self):
         clip = tone_clip(0.05, lead_silence=0.030, samplerate=RATE)
@@ -754,6 +791,10 @@ class RecorderLossAccountingTest(unittest.TestCase):
         self.assertEqual(shortfall["frames_lost"],
                          result.integrity["frames_written"]
                          - result.integrity["frames_persisted"])
+        # The gap sits at the real end of the file, not past it (R03-F03b).
+        self.assertEqual(shortfall["file_sample"], result.frames)
+        for gap in result.integrity["gaps"]:
+            self.assertLessEqual(gap["file_sample"], result.frames)
 
     def test_the_mapping_is_right_on_both_sides_of_a_recorder_drop(self):
         rec = self._recorder(max_queue_blocks=1)

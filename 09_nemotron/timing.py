@@ -42,6 +42,7 @@ __all__ = [
     "PauseTimer", "PromptCandidate", "PlaybackPosition", "interpolate",
     "StalePositionFault", "TimingLedger", "validate_detector_profile",
     "DEFAULT_PROFILE", "DEFAULT_LATENESS_BUDGET_S", "COUNTED",
+    "ORIGIN_RUN_END", "ORIGIN_LAST_STRONG",
 ]
 
 
@@ -314,19 +315,36 @@ class CaptureTimeline:
         self._marks: list[tuple[int, float]] = []
         self._last_block_end: tuple[int, float] | None = None
         # Device-clock bookkeeping. ``_offset`` converts the device's stream
-        # clock into controller time. A callback can only ever run late, so the
-        # observed offset is biased upwards and its *minimum* is the honest
-        # estimate: it drops immediately to any lower observation and creeps
-        # upward only slowly, which tracks genuine clock drift without
-        # importing scheduling jitter into the mapping.
+        # clock into controller time. On the real backend the observation is
+        # ``first_frame_time - device_time == entry - currentTime`` - both
+        # sampled at the same callback entry, so scheduling lateness cancels
+        # out and what remains is the epoch difference between perf_counter
+        # and PortAudio's stream clock: essentially constant, drifting slowly.
+        # (An earlier version described it as "late-only" and tracked its
+        # minimum; review R03-F02 showed that model matched only the fake
+        # backend, and that an immediate downward step could label time
+        # backwards.) It is therefore tracked symmetrically and slowly, and the
+        # block time derived from it is clamped so the mapping never runs
+        # backwards; a large correction is noted, not treated as a clock fault.
         self._offset: float | None = None
         self._last_device_end: float | None = None
+        self._last_block_time: float | None = None
+        self.offset_steps: list[dict] = []
         self.blocks_with_device_time = 0
         self.blocks_without_device_time = 0
 
-    #: How fast the device-to-controller offset is allowed to creep upward,
-    #: as a fraction of the observed error per block.
-    OFFSET_RISE_RATE = 0.001
+    #: Fraction of the observed offset error absorbed per block. At 100
+    #: blocks/s this follows a slow epoch drift within seconds while a single
+    #: outlying observation moves the mapping by a negligible amount.
+    OFFSET_TRACK_RATE = 0.01
+    #: A single-block offset correction larger than this is recorded as an
+    #: ``offset_steps`` entry so the evidence shows where the mapping was
+    #: pulled. It does not make the recording non-continuous.
+    OFFSET_STEP_NOTE_S = 0.005
+    #: A device-clock jump beyond this is not a credible lost-frame interval.
+    #: It is recorded as a ``device_time_discontinuity`` anomaly with the lost
+    #: count left unknown, rather than converted into a fabricated number.
+    DEVICE_GAP_SANITY_S = 1.0
 
     # -- ingestion
 
@@ -359,14 +377,53 @@ class CaptureTimeline:
             if device_time is None:
                 self.blocks_without_device_time += 1
                 block_time = first_frame_time
+                # The device clock is no longer a usable reference until the
+                # host API resumes reporting it. Measuring the next
+                # device-timed block against the end of the last one before
+                # this fallback run would read the whole run as lost audio
+                # (R03-F01), so the reference is dropped here and re-anchored
+                # by the next block that carries a device time.
+                self._last_device_end = None
             else:
                 self.blocks_with_device_time += 1
                 observed = first_frame_time - device_time
-                if self._offset is None or observed < self._offset:
+                if self._offset is None:
                     self._offset = observed
                 else:
-                    self._offset += (observed - self._offset) * self.OFFSET_RISE_RATE
+                    previous = self._offset
+                    self._offset += (observed - previous) * self.OFFSET_TRACK_RATE
+                    step = self._offset - previous
+                    if abs(step) > self.OFFSET_STEP_NOTE_S:
+                        self.offset_steps.append({
+                            "file_sample": self.frames_written,
+                            "device_time": device_time,
+                            "step_s": step,
+                        })
                 block_time = device_time + self._offset
+
+            # The mapping must never run backwards. A downward offset
+            # correction is an estimator adjustment, not a clock fault, so it
+            # is absorbed by clamping to the previous block's *start* rather
+            # than reported as ``clock_went_backwards``. (Clamping to the
+            # previous block's nominal end would be wrong: a device running
+            # fast legitimately starts the next block before that instant, and
+            # the clamp would push every block later and erase the drift.)
+            if self._last_block_time is not None and block_time < self._last_block_time:
+                block_time = self._last_block_time
+
+            # A device clock that genuinely runs backwards is a real anomaly
+            # and must stay distinguishable from estimator adjustments. The
+            # tolerance leaves room for a fast device, whose blocks each start
+            # a few microseconds before the previous block's nominal end.
+            if (device_time is not None and self._last_device_end is not None
+                    and device_time < self._last_device_end - self.device_gap_tolerance_s):
+                self.anomalies.append({
+                    "kind": "device_time_went_backwards",
+                    "controller_time": block_time,
+                    "file_sample": self.frames_written,
+                    "jump_s": device_time - self._last_device_end,
+                })
+                self._last_device_end = None     # re-anchor on this block
 
             gap: TimelineGap | None = None
             if not self.segments:
@@ -376,12 +433,26 @@ class CaptureTimeline:
                     late_by = device_time - self._last_device_end
                     tolerance = self.device_gap_tolerance_s
                     at = self._last_device_end + (self._offset or 0.0)
+                    basis = "device_clock"
                 else:
                     at = self._predicted_next_time()
                     late_by = block_time - at
                     tolerance = self.gap_tolerance_s
-                lost = int(round(late_by * self.sample_rate))
-                if overflowed or late_by > tolerance:
+                    basis = "callback_time"
+                if late_by >= self.DEVICE_GAP_SANITY_S:
+                    # Not a credible lost-frame interval: a device-clock step,
+                    # a suspended process, or a stream that was paused. The
+                    # count is unknown and is not invented.
+                    self.anomalies.append({
+                        "kind": "device_time_discontinuity",
+                        "controller_time": at,
+                        "file_sample": self.frames_written,
+                        "jump_s": late_by,
+                        "basis": basis,
+                    })
+                    self._open_segment(block_time)
+                elif overflowed or late_by > tolerance:
+                    lost = int(round(late_by * self.sample_rate))
                     gap = TimelineGap(
                         file_sample=self.frames_written,
                         frames_lost=max(lost, 0),
@@ -399,6 +470,7 @@ class CaptureTimeline:
                 self.device_frames += frames
                 end_time = block_time + frames / self.sample_rate
                 self._last_block_end = (self.frames_written, end_time)
+                self._last_block_time = block_time
                 if device_time is not None:
                     self._last_device_end = device_time + frames / self.sample_rate
                 self._mark(self.frames_written, end_time)
@@ -452,6 +524,28 @@ class CaptureTimeline:
         """Confirm frames actually written to storage, from the writer thread."""
         with self._lock:
             self.frames_persisted += int(frames)
+
+    def note_tail_shortfall(self, frames: int, at: float) -> TimelineGap:
+        """Record frames that were delivered but never reached the file's end.
+
+        Used at finalisation for blocks still queued when the writer died.
+        Those frames are necessarily the tail of the file, so the gap sits at
+        ``frames_persisted`` - the real end of the published audio - and no
+        empty trailing segment is opened. (The first version placed it at the
+        delivered count, which is past the end of the file; R03-F03b.)
+        """
+        if frames < 0:
+            raise ValueError("frames must be >= 0")
+        with self._lock:
+            gap = TimelineGap(
+                file_sample=self.frames_persisted,
+                frames_lost=int(frames),
+                controller_time=at,
+                kind="writer_shortfall",
+                method=COUNTED,
+            )
+            self.gaps.append(gap)
+            return gap
 
     def _open_segment(self, start_time: float) -> None:
         self.segments.append(TimelineSegment(
@@ -551,13 +645,28 @@ class CaptureTimeline:
         """Everything a consumer needs to decide whether to trust this audio.
 
         ``continuous`` is deliberately conservative: an empty recording, a gap,
-        a clock anomaly, or any divergence between frames handed to the
-        recorder and frames confirmed on disk all make it false. A reader must
-        never see ``continuous: true`` for audio that is actually short.
+        a clock anomaly, any divergence between frames handed to the recorder
+        and frames confirmed on disk, or a timing basis that could not have
+        seen a lost block all make it false. A reader must never see
+        ``continuous: true`` for audio that is actually short.
         """
         persisted_known = self.frames_persisted > 0 or self.frames_written == 0
         complete = (self.frames_persisted == self.frames_written
                     if persisted_known else False)
+        if self.blocks_without_device_time == 0 and self.blocks_with_device_time:
+            basis = "device_clock"
+            undetectable = self.device_gap_tolerance_s
+        elif self.blocks_with_device_time == 0:
+            basis = "callback_time"
+            undetectable = self.gap_tolerance_s
+        else:
+            basis = "mixed"
+            undetectable = self.gap_tolerance_s
+        # On the callback-time basis a loss shorter than the tolerance is
+        # invisible, so "continuous" cannot honestly be asserted there: the
+        # field says what the evidence can support, and ``undetectable_gap_s``
+        # says what it cannot (R03-F03a).
+        continuity_supported = basis == "device_clock"
         return {
             "name": self.name,
             "sample_rate": self.sample_rate,
@@ -576,12 +685,13 @@ class CaptureTimeline:
             "blocks_with_device_time": self.blocks_with_device_time,
             "blocks_without_device_time": self.blocks_without_device_time,
             "device_to_controller_offset_s": self._offset,
-            "gap_basis": ("device_clock" if self.blocks_without_device_time == 0
-                          else ("callback_time"
-                                if self.blocks_with_device_time == 0
-                                else "mixed")),
+            "offset_steps": list(self.offset_steps),
+            "gap_basis": basis,
+            "undetectable_gap_s": undetectable,
+            "continuity_supported_by_basis": continuity_supported,
             "continuous": bool(self.frames_written > 0 and not self.gaps
-                               and not self.anomalies and complete),
+                               and not self.anomalies and complete
+                               and continuity_supported),
         }
 
 
@@ -921,37 +1031,76 @@ class SpeechSegmenter:
 
 # --- pause timer and prompt eligibility ---------------------------------------
 
+#: Where the silence interval starts counting. ``run_end`` is the end of the
+#: in-speech run, which includes frames the detector kept in its hysteresis
+#: band; ``last_strong`` is the end of the last frame at or above the speech
+#: threshold. They differ by the band dwell, which is time the participant may
+#: or may not have been audibly speaking - so the choice changes how much real
+#: silence precedes the prompt and is a research decision (goal.md section
+#: 14), applied here as configuration rather than as a code change.
+ORIGIN_RUN_END = "run_end"
+ORIGIN_LAST_STRONG = "last_strong"
+_ORIGINS = (ORIGIN_RUN_END, ORIGIN_LAST_STRONG)
+
+
 class PauseTimer:
     """The one place a silence deadline is computed.
 
     ``arm`` happens only when participant speech has been detected, so no
     pre-speech silence can ever qualify. The deadline is
-    ``last speech offset + threshold``; the detector's confirmation delay is
-    recorded separately and never added to the interval.
+    ``speech offset + threshold``, where the offset is read from the event
+    according to the configured ``origin``; the detector's confirmation delay
+    is recorded separately and never added to the interval.
+
+    ``too_late`` guards a different hazard from the origin choice. With a
+    profile that passes ``validate_detector_profile`` and a healthy capture
+    timeline, an offset is always confirmed before its deadline. It can still
+    be discovered late when the frame times come from a capture timeline that
+    contains a gap between the last speech frame and the confirming frame, or
+    when a real detector buffers more than its nominal hangover. Those are the
+    cases the budget bounds (R03-F08).
     """
 
     def __init__(self, threshold_s: float, *,
                  profile: DetectorProfile | None = None,
-                 lateness_budget_s: float = DEFAULT_LATENESS_BUDGET_S) -> None:
+                 lateness_budget_s: float = DEFAULT_LATENESS_BUDGET_S,
+                 origin: str = ORIGIN_RUN_END) -> None:
         if threshold_s <= 0:
             raise ValueError("threshold_s must be positive")
         if lateness_budget_s < 0:
             raise ValueError("lateness_budget_s must be >= 0")
+        if origin not in _ORIGINS:
+            raise ValueError(f"origin must be one of {_ORIGINS}, not {origin!r}")
         self.threshold_s = float(threshold_s)
         self.profile = profile
         self.lateness_budget_s = float(lateness_budget_s)
+        self.origin = origin
         self.armed = False
         self.silence_since: float | None = None
         self.silence_confirmed_at: float | None = None
         self.speech_runs = 0
 
+    def origin_time(self, event: SpeechEvent) -> float:
+        """The instant the configured origin reads off an offset event."""
+        if self.origin == ORIGIN_LAST_STRONG and event.strong_event_time is not None:
+            return event.strong_event_time
+        return event.event_time
+
     def note_event(self, event: SpeechEvent) -> None:
         if event.kind == SPEECH_ONSET:
             self.note_onset(event.event_time)
         elif event.kind == SPEECH_OFFSET:
-            self.note_offset(event.event_time, event.confirmed_time)
+            self.note_offset(self.origin_time(event), event.confirmed_time)
         else:
             raise ValueError(f"unexpected event kind {event.kind!r}")
+
+    def as_record(self) -> dict:
+        return {
+            "threshold_s": self.threshold_s,
+            "origin": self.origin,
+            "lateness_budget_s": self.lateness_budget_s,
+            "profile": None if self.profile is None else self.profile.as_record(),
+        }
 
     def note_onset(self, event_time: float) -> None:
         self.armed = True

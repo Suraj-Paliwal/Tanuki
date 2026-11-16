@@ -1,4 +1,8 @@
 {
+  "superseded": true,
+  "superseded_reason": "single-shot --playback run on the default MME device; superseded by the 40-trial distributions in audio_check_commit_default.json",
+  "superseded_by": "validation/audio_check_commit_wasapi.json and validation/audio_check_commit_default.json",
+  "verdict_note": "the 'verdict' below was stamped by a pre-fix tool that reported PASS despite NOT_RUN checks (round-1 finding C13); under the current ladder it would read INCOMPLETE",
   "tool": "tools/check_audio.py",
   "audio_io_module": "audio_io.py",
   "environment": {
