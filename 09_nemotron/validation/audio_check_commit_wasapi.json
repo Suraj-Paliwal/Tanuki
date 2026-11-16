@@ -6,7 +6,7 @@
     "platform": "Windows-11-10.0.26300-SP0",
     "machine": "AMD64",
     "numpy": "2.3.5",
-    "timestamp_utc": "2026-11-16T18:07:16Z",
+    "timestamp_utc": "2026-11-16T22:18:34Z",
     "sounddevice": "0.5.5",
     "soundfile": "0.13.1",
     "onnxruntime": "1.24.4"
@@ -300,7 +300,7 @@
         "seconds": 0.5200000000000002,
         "method": "estimated",
         "uncertainty_s": 0.01,
-        "source": "device_latency:device_time"
+        "source": "device_latency:device_time;reported=0.0200;per_block=0.0200"
       }
     },
     {
@@ -324,8 +324,11 @@
         "all_frames_persisted": true,
         "blocks_with_device_time": 80,
         "blocks_without_device_time": 0,
-        "device_to_controller_offset_s": -0.020000000000000018,
+        "device_to_controller_offset_s": -0.01,
+        "offset_steps": [],
         "gap_basis": "device_clock",
+        "undetectable_gap_s": 0.002,
+        "continuity_supported_by_basis": true,
         "continuous": true
       }
     },
@@ -344,12 +347,12 @@
     {
       "check": "commit_delay_distribution",
       "status": "PASS",
-      "detail": "n=40 commit delay median 7.00 ms, p95 10.32 ms, max 11.14 ms",
+      "detail": "n=40 commit delay median 6.29 ms, p95 9.61 ms, max 10.44 ms",
       "n": 40,
-      "median_ms": 6.999300007009879,
-      "p95_ms": 10.322200017981231,
-      "max_ms": 11.142199975438416,
-      "min_ms": 0.04299997817724943
+      "median_ms": 6.289099983405322,
+      "p95_ms": 9.608499938622117,
+      "max_ms": 10.444099956657737,
+      "min_ms": 0.16089994460344315
     },
     {
       "check": "device_offset_distribution",
@@ -363,13 +366,14 @@
     {
       "check": "estimated_onset_delay_distribution",
       "status": "PASS",
-      "detail": "n=40 estimated onset delay median 27.00 ms, p95 30.32 ms, max 31.14 ms = commit delay 7.00 + device offset 10.00 + clip lead 10.00 (medians) - device-latency estimate, not acoustic",
+      "detail": "n=40 estimated onset delay median 26.29 ms, p95 29.61 ms, max 30.44 ms = commit delay 6.29 + device offset 10.00 + clip lead 10.00 (medians) - device-latency estimate, not acoustic",
       "n": 40,
-      "median_ms": 26.99930002563633,
-      "p95_ms": 30.322200036607683,
-      "max_ms": 31.142199994064867,
+      "skipped_no_onset": 0,
+      "median_ms": 26.289100002031773,
+      "p95_ms": 29.60849995724857,
+      "max_ms": 30.44409997528419,
       "components_median_ms": {
-        "commit_delay": 6.999300007009879,
+        "commit_delay": 6.289099983405322,
         "device_offset": 10.000000009313226,
         "clip_leading_silence": 10.0
       },
@@ -379,8 +383,8 @@
     {
       "check": "meets_candidate_onset_target",
       "status": "PASS",
-      "detail": "estimated p95 onset delay 30.32 ms vs the 100 ms candidate target (a proposal, not a research-approved tolerance; the acoustic onset is still unmeasured)",
-      "p95_ms": 30.322200036607683,
+      "detail": "estimated p95 onset delay 29.61 ms vs the 100 ms candidate target (a proposal, not a research-approved tolerance; the acoustic onset is still unmeasured)",
+      "p95_ms": 29.60849995724857,
       "candidate_target_ms": 100.0,
       "meets_candidate_target": true,
       "basis": "estimated"

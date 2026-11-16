@@ -74,10 +74,34 @@ previously such frames were counted as written, which left the file short while
 every later sample index mapped to a time earlier than the truth, with
 `continuous` still reporting true. Delivered and persisted frame counts are
 tracked separately and reconciled at finalisation. And gap detection moved onto
-PortAudio own block clock: callback-entry time carries 12-40 ms of scheduling
-jitter on this PC, so no threshold on it could separate jitter from a lost
-10 ms block, whereas the device clock does not jitter and a 2 ms tolerance
-suffices.
+PortAudio own block clock: without it, the only timing available is
+callback-entry time, which carries 12-40 ms of scheduling jitter on this PC,
+and no threshold on that could separate jitter from a lost 10 ms block; the
+device clock does not jitter and a 2 ms tolerance suffices.
+
+**Corrected after round 2 (findings R03-F01, F02, F03).** Three defects in
+that mechanism were fixed. The device-clock reference is now dropped whenever
+a block arrives without a device time and re-anchored by the next block that
+carries one, so a host API that stops and resumes reporting block times (the
+survey shows WDM-KS doing this, and WDM-KS is the only host API with an input
+device on this PC) no longer reads the whole fallback run as lost audio; a
+device-clock jump of a second or more is recorded as a
+`device_time_discontinuity` anomaly with the lost count left unknown, rather
+than converted into a fabricated number. The device-to-controller offset
+estimator was described wrongly: on the real backend the observation is
+`entry - currentTime`, both sampled at callback entry, so lateness cancels and
+what remains is a slowly drifting epoch difference - it is now tracked
+symmetrically and slowly, the derived block time is clamped so the mapping
+never runs backwards, a large correction is noted as an `offset_steps` entry
+rather than reported as a clock fault, and a device clock that genuinely runs
+backwards is still flagged as `device_time_went_backwards`. And `continuous`
+now requires the device-clock basis: on the callback-time basis a loss shorter
+than the 80 ms tolerance is invisible, and the field says so
+(`continuity_supported_by_basis`, `undetectable_gap_s`) instead of asserting
+what the evidence cannot support. The fake backend now models the real
+asymmetry - in device-time mode the block's controller time is derived from
+the device clock plus a stable epoch, so callback lateness reaches
+`entry_time` but not `first_frame_time`, exactly as PortAudio behaves.
 
 ## D4 — The silence threshold is added to the speech offset, once
 
@@ -108,8 +132,21 @@ prompt after a fraction of the assigned threshold. Second, `PauseTimer` exposes
 `discovery_lateness` and refuses to be eligible when the deadline was already
 past by more than a configurable budget (default 50 ms); the controller records
 that as a `deadline_already_past` deviation and rearms instead of speaking.
-Both readings of where speech ended are recorded per event; which one the
-analysis uses is research-owned.
+Both readings of where speech ended are recorded per event.
+
+**Corrected after round 2 (finding R03-F09).** That choice governs the *live*
+deadline during collection, not only the analysis afterwards: the pause timer
+consumes whichever origin is configured, and the two differ by the band dwell,
+which is silence the participant may or may not have received before the
+prompt. It is therefore a research decision about the manipulation, and it is
+applied as configuration - `PauseTimer(origin="run_end" | "last_strong")`,
+recorded with the trial - rather than by editing code. The engineering default
+is `run_end`. The staleness guard (`too_late`) covers a different hazard from
+the origin: with a valid profile on a healthy timeline an offset is always
+confirmed before its deadline; it can still be discovered late when a capture
+gap falls between the last speech frame and the confirming frame, or when a
+real detector buffers beyond its nominal hangover, and those are the cases the
+50 ms budget bounds (R03-F08).
 
 ## D5 — WASAPI, not the Windows default device
 
@@ -183,6 +220,14 @@ header on close. The planned fix is to write the partial as raw PCM with a
 sidecar metadata file and convert on finalisation, so a killed attempt is
 recoverable rather than merely detectable.
 
+**Also deferred to M3 (finding C18, from R01-F12 via R03-F06).** Publication
+by `os.replace` is atomic but not proven durable: nothing flushes or `fsync`s
+the file before the rename or the directory after it, so an attempt that was
+"published" immediately before a power loss may not survive. The M3 storage
+checkpoint owns both this and C12 together; its crash-recovery acceptance must
+include a durability check, and until then the M3/M6 crash-recovery gate is
+unpassed.
+
 ## D7 — A guard callable carries event precedence into the commit instant
 
 **Decided (M1).** `OutputPlayer.arm(clip, candidate, guard=...)` takes a
@@ -199,6 +244,18 @@ into the audio layer.
 **Constraint this imposes on M3.** The guard must read already-decided flags
 and must not lock, allocate or block. The controller owns the one-prompt
 allowance; the device layer only refuses to speak twice at once.
+
+**The same contract applies to `on_fault` and to ledger writes from the audio
+path (round 2, finding R03-F06).** `ContinuousRecorder` and `OutputPlayer`
+call the controller-supplied `on_fault` synchronously, possibly from inside
+the PortAudio callback and (for the player) while holding the player lock.
+The handler must not block, take a lock a slow holder might own, do I/O, or
+raise; it sets flags and returns, and the controller reads `faults` and the
+ledger on its own thread. The ledger itself takes only a short uncontended
+lock around the sequence counter and the append. Per-attempt scoping of the
+prompt slot is likewise not optional: `arm()` and `play()` refuse to run
+outside a `begin_attempt()`, and a candidate whose `trial_id` differs from
+the current attempt is refused (R03-F07).
 
 ## D8 — Tests run on a fake backend with a manual clock
 
@@ -231,4 +288,4 @@ in `goal.md` section 14.
 | D4 | The detector profile (frame size, hangover) as part of the frozen manipulation |
 | D5 | The final PC/speaker/microphone configuration and the frozen timing tolerance |
 | D7 | The event precedence table and the rearming rule in `goal.md` section 6 |
-| D4 | Which reading of "where speech ended" the analysis uses, and the lateness budget beyond which a deadline becomes a deviation |
+| D4 | Which reading of "where speech ended" the live deadline counts from (`run_end` or `last_strong`), and the lateness budget beyond which a deadline becomes a deviation |

@@ -6,16 +6,20 @@ Updated: 2026-11-17 (Japan time).
 
 - `goal.md` version 0.3 describes the experiment-first system and the later
   isolated conversation mode. Research-owned decisions in §14 remain open.
-- **M1 device/timing layer implemented; round-1 independent review returned
-  NEEDS_FIXES; all eight consolidated Majors are fixed and a fix-verification
-  review (R03) is in flight.**
+- **M1 device/timing layer implemented and through two review rounds.** Round
+  1 (R01/R02) found eight Majors, all fixed; round 2 (R03) verified seven of
+  them, found the device-clock gap detector partially fixed with three new
+  Majors plus a snapshot-drift process fault, all now fixed. Round 3 (R04) is
+  the final iteration of the bounded loop.
 - **Session preflight implemented** (`preflight.py`, `config/experiment.json`):
   the start-of-session validation and measurement step required by `goal.md`
   §6, now part of the application rather than a bench script.
-- 139 tests pass. Executed device evidence is in `validation/audio_spike.md`
-  and `validation/preflight_wasapi.json`.
-- Nothing is committed to Git. Some files are staged; the index was left as
-  found rather than mutated mid-review.
+- 153 tests pass (74 timing, 53 audio I/O, 26 preflight). Executed device
+  evidence is in `validation/audio_spike.md` and
+  `validation/preflight_wasapi.json`.
+- The user committed `b4fd62f M1-audio-001` and `0198546 M1-fix`; the
+  coordinator has made no commits. Round-2 code is inside `0198546`; the
+  evidence and record edits after it are uncommitted.
 
 ### Files that exist
 
@@ -28,7 +32,7 @@ Updated: 2026-11-17 (Japan time).
 | `tools/check_audio.py` | Bench tool: inventory, synthetic checks, host-API survey, commit-timing distributions |
 | `requirements.txt` | Exact pins (`numpy==2.3.5`, `sounddevice==0.5.5`) |
 | `decisions.md` | Engineering decisions D1-D8 with alternatives and dependencies |
-| `tests/` | 139 tests, all on the fake backend with a manual clock |
+| `tests/` | 153 tests, all on the fake backend with a manual clock |
 | `validation/` | Executed evidence, including what was NOT_RUN and why |
 
 ### Measured facts about this PC, not worked around
@@ -53,27 +57,32 @@ Updated: 2026-11-17 (Japan time).
 
 ## Active checkpoint
 
-`M1-audio-001`, round 2 (fix verification).
+`M1-audio-001`, round 3 (fix verification over the complete tree, preflight
+included for its first review).
 
 - Round-1 packet: `reviews/M1-audio-001/packet.md`; reports from `R01`
   (focused) and `R02` (critic), both **NEEDS_FIXES**.
 - Findings, dispositions and fixes: `reviews/M1-audio-001/resolution.md`.
-- Round-2 packet: `reviews/M1-audio-001/packet-round-2.md`; reviewer `R03`
+- Round-2 packet and report: `packet-round-2.md`, `R03` → **NEEDS_FIXES**;
+  findings F01-F10 and their fixes are the round-2 section of
+  `resolution.md`.
+- Round-3 packet: `reviews/M1-audio-001/packet-round-3.md`; reviewer `R04`
   dispatched 2026-11-17, **verdict pending**. Target files must not be edited
-  until the report is in.
-- Unresolved: **C12** (a `.partial` recording reports zero frames after an
-  abrupt kill) and **C16** (nothing binds `PromptCandidate.deadline` to the
-  `PauseTimer`), both deferred to M3 with the developer as owner; both leave
-  the M3/M6 crash-recovery evidence gate unpassed.
+  until the report is in. If round 3 does not converge, the workflow says stop
+  changing the disputed scope and present alternatives to the user.
+- Unresolved, deferred to M3 with the developer as owner: **C12** (`.partial`
+  reports zero frames after an abrupt kill), **C16** (nothing binds
+  `PromptCandidate.deadline` to the `PauseTimer`), **C18** (publication is
+  atomic but not `fsync`-durable). All three leave the M3/M6 crash-recovery
+  gate unpassed.
 
 ## Next action
 
-1. Collect the `R03` fix-verification report; resolve anything it raises and
-   record it in `reviews/M1-audio-001/resolution.md` as round 2.
-2. Create a preflight review checkpoint (`M1-preflight-002`) with its own
-   packet: `preflight.py`, `config/experiment.json`, `tests/test_preflight.py`
-   and `validation/preflight_wasapi.json`. It has not been independently
-   reviewed.
+1. Collect the `R04` report; record its outcome as round 3 in
+   `reviews/M1-audio-001/resolution.md`. If it passes for scope, mark
+   `M1-audio-001` complete in `reviews/INDEX.md`; if not, stop editing the
+   disputed scope and present the alternatives to the user.
+2. (Folded into round 3: the preflight is reviewed in the same packet.)
 3. Then `M1-avatar-002`: bring in the minimal renderer/asset snapshot with
    `asset-provenance.json` and drive `TanukiLipSync.playTrack(track, getTime)`
    from `OutputPlayer.position()` through the bounded-interpolation and
@@ -145,11 +154,13 @@ round-1 review:
 - **Detector profile** (`timing.DEFAULT_PROFILE`: 32 ms frames, 96 ms minimum
   speech, 150 ms hangover). Shapes where a speech offset lands; part of the
   frozen manipulation.
-- **Which reading of "where speech ended" the analysis uses** — end of the
-  in-speech run including hysteresis-band frames, or end of the last frame
-  above the speech threshold. Both are now recorded per event; they differ by
-  the band dwell, which directly changes how much silence a participant
-  received.
+- **Which reading of "where speech ended" the live deadline counts from** —
+  `run_end` (the in-speech run including hysteresis-band frames) or
+  `last_strong` (the last frame above the speech threshold). This is now a
+  `PauseTimer` configuration option recorded with each trial, default
+  `run_end`. Both readings are recorded per event; they differ by the band
+  dwell, which directly changes how much silence a participant received before
+  the prompt. It governs the manipulation, not only the analysis.
 - **The lateness budget** beyond which a deadline becomes a
   `deadline_already_past` deviation rather than a prompt (engineering default
   50 ms).

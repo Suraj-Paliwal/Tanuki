@@ -152,6 +152,7 @@ def synthetic_checks() -> list[dict]:
         mic, speaker = backend.streams[0], backend.streams[1]
 
         clip = tone_clip(0.6, samplerate=rate, clip_id="synthetic-encouragement")
+        player.begin_attempt("synthetic")
         deadline = clock.now() + 0.5
         cand = PromptCandidate(trial_id="synthetic", threshold_s=0.5,
                                deadline=deadline, scheduled_at=clock.now())
@@ -225,6 +226,7 @@ def playback_check(*, seconds: float = 1.0, amplitude: float = 0.08,
         latency = player.latency_s
         clip = tone_clip(seconds, amplitude=amplitude, samplerate=CAPTURE_RATE,
                          clip_id="bench-tone")
+        player.begin_attempt("bench")
         deadline = clock.now() + 0.30
         cand = PromptCandidate(trial_id="bench", threshold_s=0.5,
                                deadline=deadline, scheduled_at=clock.now())

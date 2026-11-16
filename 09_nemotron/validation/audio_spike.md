@@ -1,7 +1,16 @@
 # M1 audio and timing feasibility spike
 
-Checkpoint `M1-audio-001`. Executed 2026-11-17 (Asia/Tokyo; the JSON reports
-carry UTC timestamps from 2026-11-16T17:2x).
+Checkpoint `M1-audio-001`. Executed 2026-11-17 (Asia/Tokyo). The JSON reports
+carry UTC timestamps: the two **superseded** single-shot files are from
+2026-11-16T17:28-17:29Z, the current 40-trial and survey reports from
+2026-11-16T22:18Z (re-run after round 2 of review on the corrected tool).
+
+**Every device measurement below was taken over a TeamViewer remote session.**
+A remote-desktop audio stack can redirect or claim endpoints, change which
+device is the default and alter the latency a device reports, so this is the
+largest single limitation on Findings 1-3. All of them must be repeated at the
+physical machine with the final speakers and microphone attached before any
+figure here is treated as describing the study configuration.
 
 This records what was actually executed on this PC and what was not. A pass
 here establishes that the controller's capture/playback/timing logic behaves as
@@ -33,8 +42,16 @@ python tools/check_audio.py --commit-trials 40 --device 8 \
 python tools/check_audio.py --commit-trials 40 \
     --out validation/audio_check_commit_default.json
 python tools/check_audio.py --playback --device 8 \
-    --out validation/audio_check_wasapi.json
+    --out validation/audio_check_wasapi.json        # superseded, see Finding 3
+python tools/check_audio.py --playback \
+    --out validation/audio_check_playback.json      # superseded, default device
 ```
+
+Each `validation/audio_check_*.json` is produced by exactly one command above.
+The two superseded files carry `"superseded": true` and a reason at the top of
+the JSON; their internal `"verdict": "PASS"` was stamped by the pre-fix tool
+and would read `INCOMPLETE` under the current verdict ladder. (Round 1 claimed
+the default-device command had been added to this list; it had not - R03-F05.)
 
 `--playback` is the only command that makes sound (a quiet 1 kHz tone). No
 command above opens the microphone; `--duplex --allow-microphone` would, and
@@ -72,10 +89,13 @@ One output device per host API was opened for one second, emitting silence
 
 | Host API | Device | Reported output latency | Callbacks in 1 s | Worst interval |
 |---|---|---|---|---|
-| MME (current default) | 0 Microsoft Sound Mapper - Output | 180.0 ms | 96 | 33.51 ms |
-| DirectSound | 4 Primary Sound Driver | 240.0 ms | 99 | 29.98 ms |
-| **WASAPI** | **8 VZ239 (NVIDIA High Definition Audio)** | **22.0 ms** | **102** | **11.84 ms** |
-| WDM-KS | 11 SPDIF Out (HD Audio SPDIF out) | 40.7 ms | 108 | 40.27 ms |
+| MME (current default) | 0 Microsoft Sound Mapper - Output | 180.0 ms | 96 | 30.08 ms |
+| DirectSound | 4 Primary Sound Driver | 240.0 ms | 97 | 16.55 ms |
+| **WASAPI** | **8 VZ239 (NVIDIA High Definition Audio)** | **22.0 ms** | **103** | **14.13 ms** |
+| WDM-KS | 11 SPDIF Out (HD Audio SPDIF out) | 40.7 ms | 108 | 40.28 ms |
+
+Measured over a TeamViewer session (see the note at the top); worst intervals
+vary by several milliseconds between runs.
 
 Nominal interval at 48 kHz with a 480-frame block is 10.00 ms. Those worst-case
 intervals are scheduling jitter, not lost audio, and they are why gap detection
@@ -83,7 +103,12 @@ runs on the device's own block clock rather than on callback-entry time: a time
 threshold wide enough to tolerate 40 ms of lateness could never see a single
 lost 10 ms block. WDM-KS also reported *both* block-timing methods within one
 stream (`"block_timing_method": ["device_time", "fallback"]`), which the
-recorder now treats as a fault rather than as a usable time source.
+recorder now treats as a fault rather than as a usable time source. Since
+round 2 the timeline also drops its device-clock reference across such a
+fallback run and re-anchors afterwards, so the run is no longer misread as
+lost audio; on the callback-time basis a loss shorter than the 80 ms
+tolerance is undetectable, and `integrity()` says so rather than reporting
+`continuous: true` there.
 
 ## Finding 3: commit and estimated-onset delay, 40 prompts per device
 
@@ -108,8 +133,12 @@ or with a property of the audio file:
 
 | Device | Early commits | Commit delay median / p95 / max | Device offset median | Clip lead | Onset delay median / p95 / max | Device-attributable p95 | Meets 100 ms candidate target |
 |---|---|---|---|---|---|---|---|
-| WASAPI, device 8 | 0 / 40 | 7.00 / 10.32 / 11.14 ms | 10.00 ms | 10.00 ms | 27.00 / 30.32 / 31.14 ms | ~20.3 ms | yes (estimated) |
-| Default MME | 0 / 40 | 8.60 / 10.10 / 29.20 ms | 171.03 ms | 10.00 ms | 189.58 / 190.90 / 210.19 ms | ~181 ms | **no (estimated)** |
+| WASAPI, device 8 | 0 / 40 | 6.29 / 9.61 / 10.44 ms | 10.00 ms | 10.00 ms | 26.29 / 29.61 / 30.44 ms | ~19.6 ms | yes (estimated) |
+| Default MME | 0 / 40 | 8.55 / 12.80 / 29.42 ms | 170.15 ms | 10.00 ms | 188.75 / 192.88 / 219.20 ms | ~183 ms | **no (estimated)** |
+
+(Round-1 corrected run on the same tool before the round-2 fixes: WASAPI
+30.32 ms p95, MME 190.90 ms p95 - within run-to-run variation of the figures
+above.)
 
 "Device-attributable" excludes the 10 ms lead belonging to the probe clip
 itself. For a real stimulus the corresponding term is that clip's own leading
@@ -118,7 +147,7 @@ silence, which the frozen manifest records per asset.
 Raw reports: `audio_check_commit_wasapi.json`,
 `audio_check_commit_default.json`.
 
-Three things this still does **not** say:
+Four things this still does **not** say:
 
 1. **It is not an acoustic measurement.** The device offset comes from
    PortAudio's own per-block DAC time. `goal.md` section 7 requires a recorded
@@ -134,6 +163,10 @@ Three things this still does **not** say:
    target with margin either way.
 3. **40 trials on an idle machine is not a distribution under load.** No
    concurrent rendering, synthesis or disk activity was running.
+4. **It was measured through TeamViewer**, as noted at the top. Each committed
+   onset record now carries both latency readings and an `uncertainty_s` no
+   smaller than their disagreement (12 ms on WASAPI), so the machine-readable
+   record is at least as cautious as this prose.
 
 The 100 ms figure is the candidate engineering target in `goal.md` section 7. It
 is a proposal, not a research-approved tolerance, and the tolerance freeze
@@ -161,8 +194,11 @@ Kept so the correction is auditable, not deleted:
 
 ## Finding 4: synthetic behaviour checks
 
-`python -m unittest discover -s tests -p "test_*.py"` - **113 tests, OK**,
-0.28 s (80 at first review; 33 added for the round-1 fixes). All run on `FakeBackend` with a `ManualClock`: no device is opened and
+`python -m unittest discover -s tests -p "test_*.py"` - **153 tests, OK**,
+0.40 s. Per file, verified by running each: `test_timing.py` 74,
+`test_audio_io.py` 53, `test_preflight.py` 26. (80 at the first review; 33
+added for the round-1 fixes; 26 with the session preflight; 14 for the round-2
+fixes.) All run on `FakeBackend` with a `ManualClock`: no device is opened and
 no microphone is used, so the suite runs on this PC despite Finding 1.
 
 What the suite pins down, mapped to the requirement:
@@ -197,6 +233,13 @@ What the suite pins down, mapped to the requirement:
 | Recorder-side loss is counted, not a silent mapping shift (§13) | `RecorderLossAccountingTest` | PASS |
 | Nothing raises on the audio thread; stalled capture is faulted (§6) | `CaptureFaultContainmentTest` | PASS |
 | Jitter and drift do not fabricate gaps; a real loss still shows (§13) | `test_realistic_callback_jitter_is_not_a_gap`, `test_device_clock_drift_over_a_long_recording_is_not_a_gap`, `test_jitter_alone_cannot_hide_a_lost_block_on_the_device_clock` | PASS |
+| A fallback run between device-timed blocks is not a gap; a clock jump is an anomaly, not a count (§13) | `test_a_fallback_run_between_device_timed_blocks_is_not_a_gap`, `test_a_device_clock_jump_is_an_anomaly_not_a_fabricated_loss` | PASS |
+| The mapping never runs backwards; a real backwards device clock is still flagged (§6) | `test_realistic_callback_jitter_is_not_a_gap` (monotonic check), `test_a_device_clock_running_backwards_is_still_a_real_anomaly`, `test_a_large_offset_correction_is_noted_but_is_not_a_clock_fault` | PASS |
+| Continuity is never asserted on a basis that cannot see a lost block (§13) | `test_continuity_is_not_asserted_on_the_callback_time_basis` | PASS |
+| A tail shortfall is placed at the end of the file, never past it (§10) | `test_frames_after_a_writer_failure_are_recorded_as_lost` | PASS |
+| Prompt slot cannot be used outside an attempt (§6) | `test_arming_outside_an_attempt_is_refused`, `test_a_candidate_from_another_trial_is_refused` | PASS |
+| The silence origin is configuration; both readings produce their deadlines (§6, §14) | `SilenceOriginTest` | PASS |
+| A stale deadline is reachable through a timeline gap and refused (§6) | `test_a_timeline_gap_can_make_a_deadline_stale_through_the_segmenter` | PASS |
 | One documented detector profile (§6, §12) | `DefaultProfileTest` | PASS |
 | Ledger ordering is thread-safe (§10) | `LedgerConcurrencyTest` | PASS |
 
@@ -253,7 +296,16 @@ shortened the assigned threshold without any record of it.
   `reviews/M1-audio-001/resolution.md`.
 * A device-side gap's lost-frame count is still `estimated` from the block-time
   discrepancy, because PortAudio reports no exact lost count. A gap caused by
-  the recorder itself is `counted` and exact.
+  the recorder itself is `counted` and exact. A device-clock jump of a second
+  or more is not converted into a count at all; it is an anomaly with the loss
+  left unknown.
+* On the callback-time basis (a host API that reports no block times) a loss
+  shorter than 80 ms is undetectable. `integrity()` reports the basis and the
+  undetectable bound and never claims `continuous` there. This PC's only input
+  endpoints are on WDM-KS, which was seen mixing bases, so a real recording on
+  them would carry this limitation.
+* Every device figure in this record was measured through a TeamViewer
+  session and must be repeated at the physical machine.
 * A recording killed abruptly leaves a `.partial` file that is detectable but
   reports zero frames, because the WAV header is written on close. Deferred to
   M3 (finding C12 in the resolution record), where the partial will become raw
