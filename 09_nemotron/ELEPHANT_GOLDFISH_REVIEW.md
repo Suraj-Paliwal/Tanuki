@@ -99,8 +99,8 @@ All 15 reported findings have written dispositions and corresponding specificati
 
 Current design disposition: experiment-first architecture retained; later conversation remains a separate mode; no cloud deployment, native iPad inference, automated scoring, new account database or broad memory system added to the experimental scope.
 
-## 8. Repeat this review during development
+## 8. Ongoing development reviews (updated 2026-11-17)
 
-At each substantive milestone, give a new reviewer the current goal, relevant source files and validation evidence without the earlier conversation. Ask it to explain the behavior, identify concrete contradictions/failure cases, and check readiness against the claimed milestone. Record each finding, evidence, disposition and recheck result here. Prefer correcting the specification or implementation over adding features solely to satisfy a reviewer.
+The earlier instruction to append ongoing development reviews to this historical report is superseded by [EGM_WORKFLOW.md](EGM_WORKFLOW.md). Preserve the design findings above. Store new checkpoint packets, reports and resolutions under `reviews/<checkpoint-id>/` and register them in [reviews/INDEX.md](reviews/INDEX.md). Give fresh reviewers the current goal, relevant source files and validation evidence without the earlier conversation. Prefer correcting the specification or implementation over adding features solely to satisfy a reviewer.
 
 Before declaring a milestone complete, compare the code and measured evidence with the relevant acceptance checks in `goal.md`. Label unmeasured outcomes as unmeasured. Research protocol amendments and real participant authorization remain decisions for the research team.

@@ -7,6 +7,18 @@ Start with [goal.md](goal.md), the current development specification. It priorit
 - [Elephant–Goldfish review](ELEPHANT_GOLDFISH_REVIEW.md): fresh-context findings, dispositions and remaining readiness gates.
 - [Six candidate dialogue stories](EXPERIMENT_STORIES_DRAFT.md): draft materials requiring review; three reference stories and one practice story remain to be prepared.
 
+## Develop with ongoing review
+
+- [Development prompt](DEVELOPMENT_PROMPT.md): give this to a coding chatbot to start or resume implementation.
+- [Elephant–Goldfish workflow](EGM_WORKFLOW.md): checkpoint reviews, fresh-context isolation, testing, findings and release gates.
+- [Elephant role](reviewers/ELEPHANT.md) and [Goldfish reviewer prompt](reviewers/GOLDFISH.md): reusable instructions for the implementer and independent reviewer.
+- [Development status](DEVELOPMENT_STATUS.md): current milestone and next step.
+- [Review index](reviews/INDEX.md) and [packet template](reviews/CHECKPOINT_TEMPLATE.md): evidence and review records.
+- [AGENTS.md](AGENTS.md): folder-level instructions for coding agents that support automatic discovery.
+- [Workflow validation](reviews/WORKFLOW_VALIDATION.md): review outcome and checks for these reusable instructions.
+
+These Markdown files are invoked by the coding assistant; they are not an installed plugin or background watcher. Tools supporting `AGENTS.md` can discover the folder instructions. Other chatbots must be given the development prompt and referenced files explicitly.
+
 The earlier feasibility notes below are retained as background for the later conversation mode. Where they differ from `goal.md`, the current goal takes precedence. In particular, Nemotron installation is not a prerequisite for the experimental release.
 
 ## Earlier conversation feasibility assessment
