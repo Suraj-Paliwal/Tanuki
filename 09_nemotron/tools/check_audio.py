@@ -412,7 +412,7 @@ def commit_distribution(*, trials: int = 30, device=None,
     device_offsets: list[float] = []
     leads: list[float] = []
     skipped_no_onset = 0
-    early = 0
+    early = timed_out = 0
     try:
         for i in range(trials):
             player.begin_attempt(f"probe-{i}")
@@ -424,6 +424,10 @@ def commit_distribution(*, trials: int = 30, device=None,
             while not cand.committed and clock.now() < limit:
                 time.sleep(0.002)
             if not cand.committed:
+                # Release the slot; an armed leftover crashes the next probe's
+                # begin_attempt() rather than failing cleanly (R04-F01).
+                player.cancel_candidate("probe_timeout")
+                timed_out += 1
                 continue
             delay = (cand.committed_at - deadline) * 1000.0
             if delay < 0:
@@ -451,7 +455,9 @@ def commit_distribution(*, trials: int = 30, device=None,
 
     if len(commit_delays) < trials:
         return [_result("commit_distribution", FAIL,
-                        f"only {len(commit_delays)}/{trials} prompts committed")]
+                        f"only {len(commit_delays)}/{trials} prompts committed "
+                        f"({timed_out} timed out)",
+                        committed=len(commit_delays), timed_out=timed_out)]
     out = [_result(
         "no_early_commitment", FAIL if early else PASS,
         f"{early} of {trials} commitments landed before their deadline",

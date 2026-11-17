@@ -277,6 +277,26 @@ class OutputPlayerTest(unittest.TestCase):
         finally:
             player.close()
 
+    def test_an_armed_candidate_must_be_released_before_the_next_attempt(self):
+        """The shape of R04-F01.
+
+        A probe or trial that times out without committing has to cancel its
+        candidate; otherwise the next begin_attempt() raises, turning a
+        timed-out measurement into a crash. This pins the contract that the
+        preflight and the bench tool now honour.
+        """
+        clip = tone_clip(0.02, samplerate=RATE)
+        cand = self._candidate(self.clock.now() + 10.0)      # never reached
+        self.player.arm(clip, cand)
+        with self.assertRaises(AudioFault):
+            self.player.begin_attempt("T2")
+        # Releasing the slot makes the next attempt possible again.
+        outcome = self.player.cancel_candidate("probe_timeout")
+        self.assertEqual(outcome.outcome, CANCEL_REMOVED)
+        self.assertFalse(outcome.allowance_consumed)
+        self.player.begin_attempt("T2")
+        self.assertEqual(self.player.attempt, "T2")
+
     def test_a_candidate_from_another_trial_is_refused(self):
         clip = tone_clip(0.02, samplerate=RATE)
         other = PromptCandidate(trial_id="T9", threshold_s=0.5,
@@ -811,6 +831,74 @@ class RecorderLossAccountingTest(unittest.TestCase):
         t_first = rec.timeline.sample_to_time(0)
         t_last = rec.timeline.sample_to_time(written)
         self.assertGreater(t_last, t_first)
+
+
+class DeviceClockIntegrationTest(unittest.TestCase):
+    """The two-clock model end to end through the recorder (R04-F04).
+
+    `CaptureTimeline` is unit-tested directly; these drive the same paths
+    through `FakeStream` and `ContinuousRecorder`, which is where the epoch
+    model and the fallback round-trip actually have to hold.
+    """
+
+    def setUp(self):
+        self.clock = ManualClock(900.0)
+        self.backend = FakeBackend(self.clock)
+        self.ledger = TimingLedger(clock=self.clock)
+        self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.path = Path(self.tmp.name) / "microphone.wav"
+        self.recorders = []
+
+    def tearDown(self):
+        for rec in self.recorders:
+            if not rec.finalized:
+                try:
+                    rec.finalize(reason="teardown")
+                except Exception:
+                    pass
+        self.tmp.cleanup()
+
+    def _recorder(self, **kw):
+        rec = ContinuousRecorder(self.path, backend=self.backend,
+                                 clock=self.clock, samplerate=RATE,
+                                 blocksize=BLOCK, ledger=self.ledger, **kw)
+        self.recorders.append(rec)
+        return rec
+
+    def test_callback_lateness_does_not_reach_the_mapping(self):
+        """In device-time mode jitter lands in entry_time, not first_frame_time.
+
+        That is what the real backend does: both terms of the offset
+        observation are sampled at callback entry, so lateness cancels.
+        """
+        rec = self._recorder()
+        rec.start()
+        for i in range(20):
+            rec.stream.pump(1, source=speech_source(),
+                            jitter_s=0.030 if i % 2 else 0.0)
+        result = rec.finalize()
+        integrity = result.integrity
+        self.assertEqual(integrity["gap_basis"], "device_clock")
+        self.assertEqual(integrity["gaps"], [])
+        self.assertEqual(integrity["clock_anomalies"], [])
+        self.assertTrue(integrity["continuous"])
+        self.assertEqual(result.frames, 20 * BLOCK)
+
+    def test_a_fallback_run_through_the_recorder_is_not_lost_audio(self):
+        """The F01 round-trip, driven through the real recorder path."""
+        rec = self._recorder()
+        rec.start()
+        rec.stream.pump(5, source=speech_source())
+        rec.stream.pump(7, source=speech_source(), method="fallback")
+        rec.stream.pump(5, source=speech_source())
+        result = rec.finalize()
+        integrity = result.integrity
+        self.assertEqual(result.frames, 17 * BLOCK)
+        self.assertEqual(integrity["gaps"], [])
+        self.assertEqual(integrity["frames_lost_estimate"], 0)
+        self.assertEqual(integrity["gap_basis"], "mixed")
+        # A mixed basis cannot support a continuity claim.
+        self.assertFalse(integrity["continuous"])
 
 
 class CaptureFaultContainmentTest(unittest.TestCase):

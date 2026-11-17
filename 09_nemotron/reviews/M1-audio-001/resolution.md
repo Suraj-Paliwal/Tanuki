@@ -405,3 +405,126 @@ tests; the `fsync` point is deferred as C18 with owner and gate. This is
 iteration 2 of the bounded three-iteration loop in `EGM_WORKFLOW.md` section
 8. **This is not a pass.** Round 3 is a fix-verification review of the
 complete current tree, including the preflight files.
+
+---
+
+# Round 3 — fix verification by R04
+
+[R04, fix-verification stage](goldfish-fix-verification-R04-round-3.md)
+reviewed the complete tree (`packet-round-3.md`), including `preflight.py`,
+`config/experiment.json` and `tests/test_preflight.py` for their first
+independent review. It verified all 17 manifest digests unchanged before and
+after, confirmed by its own `find` that no Python or JSON file under
+`09_nemotron` was missing from the manifest, and reproduced the 74/53/26 = 153
+test split and the tool's `INCOMPLETE` verdict exactly. Verdict:
+**NEEDS_FIXES**. The report is preserved unedited.
+
+**Every round-2 finding was verified fixed**: F01, F03, F04, F05, F06
+(contract; `fsync` legitimately deferred as C18), F07, F08, F09, F10 and the
+C15 residual all **VERIFIED FIXED**. F02 was **PARTIALLY FIXED** — judged
+behaviourally correct everywhere R04 could hand-check it, but with no test
+isolating the clamp itself. The preflight was judged sound in what it tells an
+operator (never overstating estimate versus measurement, a verdict ladder that
+cannot read `PASS` with unrun checks, timing and capture gating matching the
+configuration and the recorded decision), but not yet clean: it shares a crash
+bug with the bench tool and had one dead configuration flag.
+
+## Round-3 findings and dispositions
+
+| ID | Severity | Summary | Disposition |
+|---|---|---|---|
+| R04-F01 | Major | A timed-out commit probe left an armed, uncancelled candidate, so the *next* probe's `begin_attempt()` raised an unhandled `AudioFault` instead of reporting a clean FAIL — in both `preflight.py` and `tools/check_audio.py` | FIX |
+| R04-F02 | Major | The round-2 clamp ("clamp to the previous block's start") was exercised by no test; reverting it alone would not have failed the suite | FIX |
+| R04-F03 | Minor | `is_participant_session` was read by no code, so nothing distinguished a participant session from a development one | FIX |
+| R04-F04 | Minor | The `FakeStream` epoch model and the F01 fallback round-trip were correct by inspection but had no coverage at the `audio_io` integration level | FIX |
+| R04-F05 | Minor | `decisions.md` D8 still said 113 tests | FIX |
+
+## What was changed in round 3
+
+**F01 — the crash.** This was self-inflicted: round 2's F07 fix made
+`begin_attempt()` refuse to start while a prompt is still armed, which is
+correct, but neither probe loop released its candidate when a probe timed out.
+Both now call `cancel_candidate("probe_timeout")` before continuing and count
+the timeouts, so the existing "only N/M committed" check reports the failure
+cleanly with the timeout count instead of the process dying on the next
+iteration. A test pins the contract directly
+(`test_an_armed_candidate_must_be_released_before_the_next_attempt`): arming
+and then calling `begin_attempt` raises, and releasing the slot makes the next
+attempt possible again.
+
+While fixing this, the same `or 0.0` pattern that R03-F10c removed from the
+bench tool was found still present in `preflight.py`
+(`(cand.device_offset_s or 0.0)`). It is now a skip-and-count, and the
+`onset_delay_target` check reports `NOT_RUN` with the skipped count when no
+probe produced an onset estimate.
+
+**F02 — isolating the clamp.** The clamp only does work when the offset
+tracker corrects by more than one block duration. At 1% of the error per
+block that needs an initial observation off by more than a second, which no
+existing test produced.
+`test_the_clamp_alone_keeps_the_mapping_monotonic` observes the first block
+with a 2 s epoch error against a strictly monotonic device clock, so neither
+`device_time_went_backwards` nor `device_time_discontinuity` can fire, and
+asserts no clock anomalies, an `offset_steps` entry larger than one block, and
+a non-decreasing `sample_to_time` across the whole recording.
+
+**Verified by revert, not asserted.** The clamp was temporarily disabled and
+the suite re-run: `test_the_clamp_alone_keeps_the_mapping_monotonic` fails, and
+so does `test_a_fallback_run_between_device_timed_blocks_is_not_a_gap`.
+`timing.py` was then restored and confirmed byte-identical by SHA-256. (R04
+judged that every scenario reaching the clamp was covered by other anomaly
+logic; the revert shows the fallback round-trip test does reach it too, so the
+gap was narrower than stated — but R04 was right that nothing isolated it.)
+
+**F03 — the participant gate.** `is_participant_session` is now a real
+blocking check. A session marked as recording a participant must have blocking
+timing, the capture check enabled and blocking, both devices pinned by
+identity, a configured research-data root and a frozen stimulus manifest;
+anything missing is a blocking FAIL listing exactly what is unmet. A
+development session reports `NOT_RUN` and is unaffected. The check records
+explicitly that passing it is a *configuration* gate only and is not research
+authorisation — the `goal.md` section 14 approvals are separate and are not
+represented anywhere in this code. Four tests cover it, including one
+asserting the committed project configuration is not marked as a participant
+session.
+
+**F04 — integration coverage.** `DeviceClockIntegrationTest` drives the
+two-clock model through `FakeStream` and `ContinuousRecorder` rather than
+`CaptureTimeline` alone: 30 ms of alternating callback lateness produces no
+gaps, no anomalies and a `device_clock` basis, proving jitter reaches
+`entry_time` but not the mapping; and a 5-device / 7-fallback / 5-device run
+through the real recorder path yields no gaps, no fabricated losses, a `mixed`
+basis and — correctly — no continuity claim.
+
+**F05.** D8 corrected to 153 (now 161).
+
+## Checks after round 3
+
+| Check | Result |
+|---|---|
+| `python -m unittest discover -s tests -p "test_*.py"` | **161 tests OK** (75 timing + 56 audio I/O + 30 preflight, each run separately) |
+| Clamp revert experiment | 2 tests fail with the clamp disabled; `timing.py` restored byte-identical |
+| `python tools/check_audio.py` | 8 PASS, 2 NOT_RUN, verdict `INCOMPLETE` |
+| `python preflight.py --config config/experiment.json --trials 20` | pinned WASAPI resolved; onset p95 30.90 ms; `participant_configuration` NOT_RUN (development session); capture not opened |
+
+Unchanged: microphone capture BLOCKED, acoustic onset and the rest NOT_RUN,
+all device figures measured over TeamViewer.
+
+## Where the bounded loop stands
+
+`EGM_WORKFLOW.md` section 8 caps this at three fix/review iterations. Three
+have now run, and the trend converged rather than stalled: 8 Majors, then 4,
+then 2 — with every prior finding verified fixed at each step, and no fix
+reversing an earlier accepted design decision. The two round-3 Majors were a
+narrow crash path and a test-coverage gap, both now closed, one of them
+demonstrated by revert.
+
+What the workflow still withholds: a checkpoint passes only when fresh review
+covers the *current* snapshot, and the current snapshot is the one these
+round-3 fixes created. So `M1-audio-001` is **not** marked complete here. The
+remaining verification is narrow — five findings, all with named tests — and
+the options were put to the user rather than decided here.
+
+Deferred, unchanged: **C12**, **C16**, **C18**, all to M3 with the developer
+as owner; the M3/M6 crash-recovery gate stays unpassed. M1 as a milestone also
+still lacks the avatar clock-adapter checkpoint.

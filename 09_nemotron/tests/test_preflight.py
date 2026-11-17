@@ -358,6 +358,61 @@ class StimulusAndStorageTest(PreflightHarness):
         self.assertTrue(check.blocks_session)
 
 
+class ParticipantConfigurationTest(PreflightHarness):
+    """The is_participant_session flag has to mean something (R04-F03)."""
+
+    def test_a_development_session_does_not_apply_participant_gates(self):
+        cfg = PreflightConfig(session_id="p1", output_device_key=WASAPI_KEY,
+                              commit_trials=3)
+        report = self._run(cfg)
+        check = self._check(report, "participant_configuration")
+        self.assertEqual(check.status, NOT_RUN)
+        self.assertTrue(report.may_start)
+
+    def test_a_participant_session_on_development_defaults_is_blocked(self):
+        cfg = PreflightConfig(session_id="p2", output_device_key=WASAPI_KEY,
+                              commit_trials=3, is_participant_session=True)
+        report = self._run(cfg)
+        check = self._check(report, "participant_configuration")
+        self.assertEqual(check.status, FAIL)
+        self.assertTrue(check.blocks_session)
+        self.assertFalse(report.may_start)
+        unmet = " ".join(check.data["unmet"])
+        for expected in ("timing_policy.blocking", "check_capture",
+                         "research_data_root", "stimulus_manifest",
+                         "input_device_key"):
+            self.assertIn(expected, unmet)
+
+    def test_a_fully_configured_participant_session_passes_the_gate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            clip = tone_clip(0.05, samplerate=RATE)
+            digest = write_wav(root / "story.wav", clip.samples, RATE)
+            (root / "manifest.json").write_text(json.dumps({
+                "version": "test",
+                "assets": [{"id": "s1", "audio": "story.wav",
+                            "sha256": digest}],
+            }), encoding="utf-8")
+            cfg = PreflightConfig(
+                session_id="p3", is_participant_session=True,
+                output_device_key=WASAPI_KEY, input_device_key=MIC_KEY,
+                commit_trials=3, samplerate=RATE, blocksize=BLOCK,
+                timing_blocking=True, check_capture=True,
+                capture_blocking=True, data_root=tmp, min_free_gb=0.0001,
+                stimulus_manifest=str(root / "manifest.json"),
+                max_onset_delay_ms=500.0)
+            report = self._run(cfg)
+        check = self._check(report, "participant_configuration")
+        self.assertEqual(check.status, PASS)
+        # Passing the configuration gate is not research authorisation.
+        self.assertIn("separate gate", check.data["note"])
+
+    def test_the_project_configuration_is_not_marked_participant(self):
+        cfg = load_config(Path(__file__).resolve().parents[1]
+                          / "config" / "experiment.json")
+        self.assertFalse(cfg.is_participant_session)
+
+
 class ReportRecordTest(PreflightHarness):
     def test_the_report_is_storable_and_records_the_configuration(self):
         cfg = PreflightConfig(session_id="r1", output_device_key=WASAPI_KEY,

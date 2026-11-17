@@ -260,7 +260,7 @@ the current attempt is refused (R03-F07).
 ## D8 — Tests run on a fake backend with a manual clock
 
 **Decided (M1).** `FakeBackend` implements the same interface as the PortAudio
-backend and is pumped by the test, which advances a `ManualClock`. All 113
+backend and is pumped by the test, which advances a `ManualClock`. All 153
 current tests use it, and it models the two clock domains separately: the
 device clock advances by exactly one block per block while callback entry can
 be delayed, which is what makes the jitter-versus-loss cases testable at all.

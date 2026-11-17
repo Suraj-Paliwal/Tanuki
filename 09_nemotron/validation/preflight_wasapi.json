@@ -1,6 +1,6 @@
 {
-  "session_id": "r3-evidence",
-  "started_at_utc": "2026-11-16T22:21:59Z",
+  "session_id": "r4-fixes",
+  "started_at_utc": "2026-11-17T09:47:45Z",
   "environment": {
     "python": "3.13.9",
     "platform": "Windows-11-10.0.26300-SP0",
@@ -9,7 +9,8 @@
     "sounddevice": "0.5.5",
     "portaudio": "PortAudio V19.7.0-devel, revision unknown",
     "config": {
-      "session_id": "r3-evidence",
+      "session_id": "r4-fixes",
+      "is_participant_session": false,
       "samplerate": 48000,
       "blocksize": 480,
       "channels": 1,
@@ -75,6 +76,13 @@
       "capture_possible": true
     },
     {
+      "check": "participant_configuration",
+      "status": "NOT_RUN",
+      "detail": "development session: participant configuration gates are not applied. Set is_participant_session for a session that records a participant",
+      "blocking": false,
+      "blocks_session": false
+    },
+    {
       "check": "detector_profile",
       "status": "PASS",
       "detail": "hangover 150 ms + 10 ms decision budget < shortest threshold 0.5 s",
@@ -133,13 +141,13 @@
     {
       "check": "commit_delay",
       "status": "PASS",
-      "detail": "n=20 median 8.55 ms, p95 9.71 ms, max 11.42 ms",
+      "detail": "n=20 median 7.43 ms, p95 10.90 ms, max 11.61 ms",
       "blocking": false,
       "blocks_session": false,
       "n": 20,
-      "median_ms": 8.54964999598451,
-      "p95_ms": 9.71479999134317,
-      "max_ms": 11.417599976994097
+      "median_ms": 7.428649958455935,
+      "p95_ms": 10.901400004513562,
+      "max_ms": 11.609299981500953
     },
     {
       "check": "device_offset",
@@ -154,17 +162,17 @@
     {
       "check": "onset_delay_target",
       "status": "PASS",
-      "detail": "estimated p95 onset delay 29.71 ms vs the 100 ms configured target (within target; this is a device-latency estimate, not an acoustic measurement, and the target is a proposal rather than a frozen tolerance)",
+      "detail": "estimated p95 onset delay 30.90 ms vs the 100 ms configured target (within target; this is a device-latency estimate, not an acoustic measurement, and the target is a proposal rather than a frozen tolerance)",
       "blocking": false,
       "blocks_session": false,
-      "p95_ms": 29.714800009969622,
-      "median_ms": 28.54965001461096,
-      "max_ms": 31.41759999562055,
+      "p95_ms": 30.901400023140013,
+      "median_ms": 27.428649977082387,
+      "max_ms": 31.609300000127405,
       "target_ms": 100.0,
       "meets_target": true,
       "method": "estimated",
       "components_median_ms": {
-        "commit_delay": 8.54964999598451,
+        "commit_delay": 7.428649958455935,
         "device_offset": 10.000000009313226,
         "clip_leading_silence": 10.0
       }
@@ -172,12 +180,12 @@
     {
       "check": "callback_cadence",
       "status": "PASS",
-      "detail": "329 callbacks, median 10.51 ms, max 12.61 ms (nominal 10.00 ms)",
+      "detail": "326 callbacks, median 10.16 ms, max 11.92 ms (nominal 10.00 ms)",
       "blocking": false,
       "blocks_session": false,
-      "callbacks": 329,
-      "median_interval_ms": 10.5119000072591,
-      "max_interval_ms": 12.605900003109127,
+      "callbacks": 326,
+      "median_interval_ms": 10.164299979805946,
+      "max_interval_ms": 11.9192999554798,
       "nominal_interval_ms": 10.0,
       "underruns": 0
     },
@@ -198,7 +206,7 @@
   ],
   "summary": {
     "PASS": 8,
-    "NOT_RUN": 5,
+    "NOT_RUN": 6,
     "WARN": 1
   },
   "verdict": "INCOMPLETE_WITH_WARNINGS",

@@ -210,6 +210,11 @@ class PreflightConfig:
     """
 
     session_id: str = "unnamed-session"
+    #: True only for a session that will record a real participant. It turns
+    #: the development defaults below into blocking requirements; it does not
+    #: by itself authorise collection, which needs the research approvals in
+    #: goal.md section 14.
+    is_participant_session: bool = False
     samplerate: int = CAPTURE_RATE
     blocksize: int = DEFAULT_BLOCKSIZE
     channels: int = 1
@@ -274,6 +279,7 @@ class PreflightConfig:
     def as_record(self) -> dict:
         return {
             "session_id": self.session_id,
+            "is_participant_session": self.is_participant_session,
             "samplerate": self.samplerate,
             "blocksize": self.blocksize,
             "channels": self.channels,
@@ -306,6 +312,9 @@ def load_config(path: str | Path) -> PreflightConfig:
         merged = dict(raw["preflight"])
         if "session_id" in raw:
             merged.setdefault("session_id", raw["session_id"])
+        if "is_participant_session" in raw:
+            merged.setdefault("is_participant_session",
+                              raw["is_participant_session"])
         # The data root and the stimulus manifest live in the experiment
         # configuration proper, not in its preflight section, so pull them
         # across rather than requiring them to be written twice.
@@ -502,6 +511,60 @@ class SessionPreflight:
                           "runtime by the pause timer's lateness budget, not "
                           "by this static check"})
 
+    def check_participant_configuration(self) -> CheckResult:
+        """A participant session must not run on the development defaults.
+
+        The development configuration deliberately warns rather than refuses on
+        out-of-target timing, leaves the microphone check off and has no data
+        root. Every one of those is wrong for a session that records a real
+        person, so the flag that says this is such a session turns them into
+        blocking requirements. Previously the flag was read by nothing
+        (R04-F03).
+
+        Passing this check is not authorisation to collect: the research gates
+        in goal.md section 14 are separate and are not represented here.
+        """
+        cfg = self.config
+        if not cfg.is_participant_session:
+            return CheckResult(
+                "participant_configuration", NOT_RUN,
+                "development session: participant configuration gates are not "
+                "applied. Set is_participant_session for a session that "
+                "records a participant")
+        missing = []
+        if not cfg.timing_blocking:
+            missing.append("timing_policy.blocking must be true so a session "
+                           "cannot run on out-of-target timing")
+        if not cfg.check_capture:
+            missing.append("preflight.check_capture must be true: recording "
+                           "must be verified before a participant speaks")
+        if not cfg.capture_blocking:
+            missing.append("preflight.capture_blocking must be true")
+        if not cfg.data_root:
+            missing.append("data.research_data_root must be configured outside "
+                           "the repository and the web root")
+        if not cfg.stimulus_manifest:
+            missing.append("materials.stimulus_manifest must be a frozen "
+                           "reviewed manifest")
+        if not cfg.output_device_key:
+            missing.append("audio.output_device_key must pin the output device "
+                           "by identity")
+        if not cfg.input_device_key:
+            missing.append("audio.input_device_key must pin the input device "
+                           "by identity")
+        if missing:
+            return CheckResult(
+                "participant_configuration", FAIL,
+                f"{len(missing)} requirement(s) unmet for a participant "
+                f"session: " + "; ".join(missing),
+                blocking=True, data={"unmet": missing})
+        return CheckResult(
+            "participant_configuration", PASS,
+            "participant-grade configuration: blocking timing, capture "
+            "verified, pinned devices, data root and frozen manifest",
+            data={"note": "configuration only; research approvals are a "
+                          "separate gate (goal.md section 14)"})
+
     def check_disk_space(self) -> CheckResult:
         cfg = self.config
         if not cfg.data_root:
@@ -627,7 +690,7 @@ class SessionPreflight:
                 return out
 
             commit, offset, onset = [], [], []
-            early = 0
+            early = timed_out = skipped_no_onset = 0
             for i in range(cfg.commit_trials):
                 player.begin_attempt(f"preflight-{i}")
                 deadline = self.clock.now() + 0.08
@@ -640,12 +703,22 @@ class SessionPreflight:
                 while not cand.committed and self.clock.now() < limit:
                     self._sleep(0.002)
                 if not cand.committed:
+                    # Take the candidate back out of the slot. Leaving it armed
+                    # would make the next probe's begin_attempt() raise, so a
+                    # timed-out measurement crashed the preflight instead of
+                    # reporting a clean FAIL (R04-F01).
+                    player.cancel_candidate("probe_timeout")
+                    timed_out += 1
                     continue
                 if cand.committed_at < deadline:
                     early += 1
                 commit.append((cand.committed_at - deadline) * 1000.0)
-                offset.append((cand.device_offset_s or 0.0) * 1000.0)
-                if cand.onset_delay_s is not None:
+                # An unknown term is skipped and counted, never written as zero
+                # (the pattern removed from the tool in R03-F10c).
+                if cand.device_offset_s is None or cand.onset_delay_s is None:
+                    skipped_no_onset += 1
+                else:
+                    offset.append(cand.device_offset_s * 1000.0)
                     onset.append(cand.onset_delay_s * 1000.0)
                 while player.state != "idle" and self.clock.now() < limit:
                     self._sleep(0.002)
@@ -654,8 +727,10 @@ class SessionPreflight:
             if len(commit) < cfg.commit_trials:
                 out.append(CheckResult(
                     "commit_timing", FAIL,
-                    f"only {len(commit)}/{cfg.commit_trials} probes committed",
-                    blocking=True))
+                    f"only {len(commit)}/{cfg.commit_trials} probes committed "
+                    f"({timed_out} timed out)",
+                    blocking=True,
+                    data={"committed": len(commit), "timed_out": timed_out}))
                 return out
 
             out.append(CheckResult(
@@ -680,7 +755,13 @@ class SessionPreflight:
                 data={"median_ms": statistics.median(offset),
                       "max_ms": max(offset), "method": ESTIMATED}))
 
-            if p95_onset is None:
+            if not onset:
+                out.append(CheckResult(
+                    "onset_delay_target", NOT_RUN,
+                    f"no probe produced an onset estimate "
+                    f"({skipped_no_onset} skipped)",
+                    data={"skipped_no_onset": skipped_no_onset}))
+            elif p95_onset is None:
                 out.append(CheckResult(
                     "onset_delay_target", NOT_RUN,
                     "no onset estimate was formed for any probe"))
@@ -834,6 +915,7 @@ class SessionPreflight:
         report.environment = self.environment()
         report.environment["config"] = cfg.as_record()
 
+        report.add(self.check_participant_configuration())
         report.add(self.check_detector_profile())
         report.add(self.check_disk_space())
         report.add(self.check_stimuli())

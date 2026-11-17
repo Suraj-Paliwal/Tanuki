@@ -437,6 +437,39 @@ class CaptureTimelineTest(unittest.TestCase):
         self.assertTrue(len(integrity["offset_steps"]) >= 1)
         self.assertTrue(integrity["continuous"])
 
+    def test_the_clamp_alone_keeps_the_mapping_monotonic(self):
+        """Isolates the clamp added for R03-F02, per finding R04-F02.
+
+        The offset tracker absorbs 1% of its error per block, so a correction
+        larger than one block (10 ms) needs an initial observation off by more
+        than a second. That is the only situation in which the clamp does any
+        work, and no other anomaly path covers it: the device clock below is
+        strictly monotonic and never steps backwards, so neither
+        `device_time_went_backwards` nor `device_time_discontinuity` fires.
+        Reverting the clamp makes `sample_to_time` decrease here.
+        """
+        tl = CaptureTimeline(RATE)
+        block = 480
+        block_s = block / RATE
+        # First block observed with a 2 s epoch error: the tracker then pulls
+        # the offset down by 0.01 * 2.0 = 20 ms on the next block, which is
+        # twice the 10 ms block duration.
+        tl.note_block(block, 2.0, device_time=0.0)
+        tl.note_persisted(block)
+        for i in range(1, 12):
+            device_time = i * block_s
+            tl.note_block(block, device_time, device_time=device_time)
+            tl.note_persisted(block)
+        integrity = tl.integrity()
+        # The clamp is an estimator adjustment, not a clock fault.
+        self.assertEqual(integrity["clock_anomalies"], [])
+        self.assertTrue(integrity["offset_steps"])
+        self.assertGreater(abs(integrity["offset_steps"][0]["step_s"]), block_s)
+        # The mapping must still never run backwards.
+        times = [tl.sample_to_time(n) for n in range(0, 12 * block + 1, 60)]
+        self.assertEqual(times, sorted(times))
+        self.assertTrue(integrity["continuous"])
+
     def test_frames_the_recorder_dropped_are_a_counted_gap_not_a_shift(self):
         """Losing audio to a writer backlog must not move every later sample.
 
