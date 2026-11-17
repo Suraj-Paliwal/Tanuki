@@ -1288,6 +1288,26 @@ class PlaybackPosition:
     duration: float
     generation: int = 0
     method: str = ESTIMATED
+    #: Why playback is not running, or ``None`` while it is.
+    #:
+    #: An idle snapshot carries no clip, so a consumer cannot tell a clip that
+    #: finished from one an operator stopped - and the protocol needs those
+    #: kept apart (goal.md section 6 keeps terminal reasons distinct). The
+    #: player knows which happened, so it says, rather than leaving the
+    #: renderer to guess from whether ``file_time`` reached ``duration``.
+    ended_reason: str | None = None
+    #: Seconds until the clip becomes audible, from ``controller_time``. Zero
+    #: once sound is actually coming out.
+    #:
+    #: Frames handed to the device are not audible until they clear the output
+    #: buffer, so for the first ``output latency`` of a clip the audible
+    #: position is still zero. A consumer that extrapolated ``file_time``
+    #: linearly from this snapshot would move the mouth during that window and
+    #: run ahead by the device latency at the start of every clip - which is
+    #: exactly where lip sync is most visible. The consumer cannot derive this
+    #: itself: it does not share this clock. So it is published, as a relative
+    #: duration that stays meaningful in the consumer's own time base.
+    pre_roll_s: float = 0.0
 
     def as_record(self) -> dict:
         return {
@@ -1298,6 +1318,8 @@ class PlaybackPosition:
             "duration": self.duration,
             "generation": self.generation,
             "method": self.method,
+            "pre_roll_s": self.pre_roll_s,
+            "ended_reason": self.ended_reason,
         }
 
 
@@ -1317,7 +1339,11 @@ def interpolate(snapshot: PlaybackPosition, now: float, *,
     if age > stale_after_s:
         raise StalePositionFault(
             f"position snapshot is {age:.3f}s old (limit {stale_after_s:.3f}s)")
-    t = snapshot.file_time + age * snapshot.rate
+    # Nothing is audible during the pre-roll, so the position does not advance
+    # through it. Without this the mouth leads the sound by the device latency
+    # at the start of every clip.
+    effective_age = max(0.0, age - snapshot.pre_roll_s)
+    t = snapshot.file_time + effective_age * snapshot.rate
     if t < 0.0:
         return 0.0
     if t > snapshot.duration:

@@ -1,0 +1,199 @@
+{
+  "": [
+    "Provenance for the minimal renderer snapshot copied into 09_nemotron for the",
+    "M1 avatar clock-adapter spike (goal.md sections 5, 7 and 12).",
+    "",
+    "model/ and vendor/ are excluded by .gitignore: 20 MB of binary assets and a",
+    "third-party library do not belong in this repository. This file is tracked",
+    "instead, so the snapshot can be verified or rebuilt from the baseline",
+    "without committing the bytes. 08_avisspeech is read-only for this work and",
+    "was not modified.",
+    "",
+    "Verify with: python tools/verify_snapshot.py"
+  ],
+  "snapshot_version": "1",
+  "created": "2026-11-17",
+  "baseline": {
+    "path": "../08_avisspeech",
+    "role": "read-only source; not modified by this checkpoint",
+    "documented_versions": {
+      "three.js": "0.169.0",
+      "aivisspeech_engine": "1.2.0"
+    },
+    "version_note": "three.js version is as documented in 08_avisspeech; this snapshot pins the exact bytes by hash rather than trusting the version string"
+  },
+  "three_addon_closure": {
+    "note": "resolved by following relative imports from the six addons app.js uses; 11 files, 158 KB, instead of the 29 MB vendor tree",
+    "entry_points": [
+      "loaders/GLTFLoader.js",
+      "environments/RoomEnvironment.js",
+      "postprocessing/EffectComposer.js",
+      "postprocessing/OutputPass.js",
+      "postprocessing/RenderPass.js",
+      "postprocessing/ShaderPass.js"
+    ]
+  },
+  "assets": [
+    {
+      "path": "model/tanuki.gltf",
+      "source": "../08_avisspeech/model/tanuki.gltf",
+      "sha256": "2bc9a4081c32f3c4cd2fc313881c146f4cca913fd6e096790858462d95f51bef",
+      "bytes": 11667,
+      "tracked_in_git": false
+    },
+    {
+      "path": "model/tanuki.bin",
+      "source": "../08_avisspeech/model/tanuki.bin",
+      "sha256": "d9df18eb6f2f12731a8fa0d08bf8bbb153f1e7c8b98c89ad9af0571894814d40",
+      "bytes": 17546260,
+      "tracked_in_git": false
+    },
+    {
+      "path": "model/basecolor.webp",
+      "source": "../08_avisspeech/model/basecolor.webp",
+      "sha256": "e07b84bf7a0267a2cfc958f43d0d6d2d35bb0c361dd1b5685123bea3c5a40dd9",
+      "bytes": 1140842,
+      "tracked_in_git": false
+    },
+    {
+      "path": "model/metalrough.webp",
+      "source": "../08_avisspeech/model/metalrough.webp",
+      "sha256": "87cfe306d5cacc4f63d0198e845cc80f19918014a0562a5b280df3180b1f2685",
+      "bytes": 47756,
+      "tracked_in_git": false
+    },
+    {
+      "path": "model/normal.webp",
+      "source": "../08_avisspeech/model/normal.webp",
+      "sha256": "a8e4146b5fe395b3fcce27993711284845f398214c30756088c2add087af0b22",
+      "bytes": 719580,
+      "tracked_in_git": false
+    },
+    {
+      "path": "vendor/three/three.module.js",
+      "source": "../08_avisspeech/vendor/package/build/three.module.js",
+      "sha256": "0a3368c165eea773490aec7b77c22de70e3eac288503409256fdbf4d12578416",
+      "bytes": 1304820,
+      "tracked_in_git": false
+    },
+    {
+      "path": "vendor/three/LICENSE",
+      "source": "../08_avisspeech/vendor/package/LICENSE",
+      "sha256": "4c40a1ef62450b857c3b2aaf294936304cd552d965fbcd9d32d4c5bcf4ba4454",
+      "bytes": 1081,
+      "tracked_in_git": false
+    },
+    {
+      "path": "vendor/three/addons/loaders/GLTFLoader.js",
+      "source": "../08_avisspeech/vendor/package/examples/jsm/loaders/GLTFLoader.js",
+      "sha256": "6f1719dcc6a179d30273dfb0de07a8c898a7981f7b08e600b446387f5967371f",
+      "bytes": 110029,
+      "tracked_in_git": false
+    },
+    {
+      "path": "vendor/three/addons/environments/RoomEnvironment.js",
+      "source": "../08_avisspeech/vendor/package/examples/jsm/environments/RoomEnvironment.js",
+      "sha256": "85869bdd22f7cf0b22e68dcefe6cb710480af0f5c901a76f7a7764fd07fc8014",
+      "bytes": 3606,
+      "tracked_in_git": false
+    },
+    {
+      "path": "vendor/three/addons/postprocessing/EffectComposer.js",
+      "source": "../08_avisspeech/vendor/package/examples/jsm/postprocessing/EffectComposer.js",
+      "sha256": "d234e578618fa816955ebdc059c049c577e203e650e33cf22bde3f232c29e669",
+      "bytes": 4651,
+      "tracked_in_git": false
+    },
+    {
+      "path": "vendor/three/addons/postprocessing/MaskPass.js",
+      "source": "../08_avisspeech/vendor/package/examples/jsm/postprocessing/MaskPass.js",
+      "sha256": "328cf7db0da5d9be83ffe39d54b01d5ac1fddf108cc98182ddbb056f5c8b537f",
+      "bytes": 2231,
+      "tracked_in_git": false
+    },
+    {
+      "path": "vendor/three/addons/postprocessing/OutputPass.js",
+      "source": "../08_avisspeech/vendor/package/examples/jsm/postprocessing/OutputPass.js",
+      "sha256": "32f879d2179087676631c799857a885586b3cdd13b9731bd3b13f06428bd58b7",
+      "bytes": 2524,
+      "tracked_in_git": false
+    },
+    {
+      "path": "vendor/three/addons/postprocessing/Pass.js",
+      "source": "../08_avisspeech/vendor/package/examples/jsm/postprocessing/Pass.js",
+      "sha256": "b3c6128340eaa37e40a6a2f1b738e894c855239417d50959759b34a2b5e89f92",
+      "bytes": 1706,
+      "tracked_in_git": false
+    },
+    {
+      "path": "vendor/three/addons/postprocessing/RenderPass.js",
+      "source": "../08_avisspeech/vendor/package/examples/jsm/postprocessing/RenderPass.js",
+      "sha256": "6c9b8a539ea16e898f65e4760f14937ef9ea94043bd9842c141e0301f41903e8",
+      "bytes": 1941,
+      "tracked_in_git": false
+    },
+    {
+      "path": "vendor/three/addons/postprocessing/ShaderPass.js",
+      "source": "../08_avisspeech/vendor/package/examples/jsm/postprocessing/ShaderPass.js",
+      "sha256": "3b28a1ee27e0eb96c0eab137a1f442ccf127a926904eced2d51e125ec44af781",
+      "bytes": 1576,
+      "tracked_in_git": false
+    },
+    {
+      "path": "vendor/three/addons/shaders/CopyShader.js",
+      "source": "../08_avisspeech/vendor/package/examples/jsm/shaders/CopyShader.js",
+      "sha256": "4e3346db194db56a596cd074e9bdb39fb5eb52040c333e0d29dc4eb1324d3b1d",
+      "bytes": 571,
+      "tracked_in_git": false
+    },
+    {
+      "path": "vendor/three/addons/shaders/OutputShader.js",
+      "source": "../08_avisspeech/vendor/package/examples/jsm/shaders/OutputShader.js",
+      "sha256": "4944cecd49c0d4d1520a4d927bde8a590fd43f041ee913252b9451855a01d0f0",
+      "bytes": 1490,
+      "tracked_in_git": false
+    },
+    {
+      "path": "vendor/three/addons/utils/BufferGeometryUtils.js",
+      "source": "../08_avisspeech/vendor/package/examples/jsm/utils/BufferGeometryUtils.js",
+      "sha256": "c25b7930e570e9ec56173cd3b866ec8d2e10016630db3937efb439daf1cedbf6",
+      "bytes": 31768,
+      "tracked_in_git": false
+    },
+    {
+      "path": "src/tanuki-lipsync.js",
+      "source": "../08_avisspeech/src/tanuki-lipsync.js",
+      "sha256": "98e9a9a91cde2f4fe12d66784fa78cb4e0ecffe23b8e051d7c3d04a5aa1f5b32",
+      "bytes": 22670,
+      "tracked_in_git": true
+    },
+    {
+      "path": "src/body.js",
+      "source": "../08_avisspeech/src/body.js",
+      "sha256": "af2a91110dd962ad7192da4d5ccf66b8b3a0e87c69886dede9d8590173789060",
+      "bytes": 6866,
+      "tracked_in_git": true
+    },
+    {
+      "path": "src/bands.js",
+      "source": "../08_avisspeech/src/bands.js",
+      "sha256": "c7642c898e7b2233618750b5a52c0433c5146c67ca0dbfa7591a9dc1f775f140",
+      "bytes": 7380,
+      "tracked_in_git": true
+    },
+    {
+      "path": "src/formants.js",
+      "source": "../08_avisspeech/src/formants.js",
+      "sha256": "f06e20d86b53a044aa134826239d35b888e96ed1b6acb5b7371d0a4517d5ec05",
+      "bytes": 5730,
+      "tracked_in_git": true
+    },
+    {
+      "path": "src/quality.js",
+      "source": "../08_avisspeech/src/quality.js",
+      "sha256": "429e5de262c5a6b5291e7928bf618abd766d4814df32c1a8fad97d00a8f31a9c",
+      "bytes": 3442,
+      "tracked_in_git": true
+    }
+  ]
+}

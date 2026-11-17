@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Tanuki avatar clock check · M1</title>
+<style>
+:root{color-scheme:dark;font-family:Inter,Segoe UI,sans-serif;background:#0f1317;color:#eef2ed}
+*{box-sizing:border-box}body{margin:0}main{max-width:1180px;margin:auto;padding:28px}
+h1{font-size:21px;margin:4px 0 2px}small,.muted{color:#a3aea8;font-size:13px}
+.layout{display:grid;grid-template-columns:1.1fr 1fr;gap:22px;margin-top:20px}
+.stage{position:relative;min-height:480px;background:#1a1d23;border:1px solid #303b35;border-radius:20px;overflow:hidden}
+.stage canvas{width:100%;height:100%;position:absolute;display:block}
+.panel{border:1px solid #303b35;border-radius:20px;padding:22px;background:#191f23}
+button{cursor:pointer;border:1px solid #465148;background:transparent;color:#e0e8df;padding:11px 15px;border-radius:9px;font:inherit;font-size:13px}
+button.primary{background:#b7dd95;border-color:#b7dd95;color:#172015;font-weight:700}
+button:disabled{opacity:.4;cursor:default}
+.row{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px}
+table{width:100%;border-collapse:collapse;font-size:12px;margin-top:8px}
+th,td{text-align:left;padding:5px 6px;border-bottom:1px solid #2b332d}
+th{color:#9eada2;font-weight:500}
+.ok{color:#b7dd95}.bad{color:#f5b6a2}.pend{color:#a3aea8}
+.meters{display:flex;gap:8px;position:absolute;bottom:18px;left:20px;right:20px}
+.meter{flex:1;font-size:10px;color:#9eada2}.meter i{display:block;height:3px;background:#334238;margin-top:5px}
+.meter b{display:block;width:0;height:3px;background:#b7dd95}
+.note{font-size:12px;color:#a3aea8;line-height:1.6;margin-top:14px}
+code{background:#101619;padding:1px 5px;border-radius:4px;font-size:12px}
+#status{position:absolute;bottom:44px;left:20px;font-size:13px;color:#bcc9be}
+</style>
+</head><body><main>
+<h1>Avatar clock check</h1>
+<small>M1 bench harness — drives the real <code>TanukiLipSync</code> from a recorded controller position trace. No audio is played and no device is opened.</small>
+
+<div class="layout">
+  <section class="stage" aria-label="Tanuki">
+    <canvas id="c"></canvas>
+    <div id="meters" class="meters"></div>
+    <div id="status">loading the model…</div>
+  </section>
+  <section class="panel">
+    <div class="row">
+      <button id="run" class="primary" disabled>Replay trace</button>
+      <button id="stale" disabled>Simulate stale clock</button>
+      <button id="reset" disabled>Reset</button>
+    </div>
+    <table>
+      <thead><tr><th>Check</th><th>Result</th></tr></thead>
+      <tbody id="results"><tr><td class="pend">not run</td><td class="pend">—</td></tr></tbody>
+    </table>
+    <p class="note">
+      What this can establish: that <code>playTrack(track, getTime)</code> accepts the
+      adapter's clock, that the mouth moves while the controller reports playing,
+      that it closes when the adapter stops, and that a stale clock stops it
+      rather than freezing it open.
+    </p>
+    <p class="note">
+      What it cannot establish: <strong>acoustic or visual synchronisation.</strong>
+      Nothing here plays sound, so no claim about the mouth matching speech
+      follows from a pass. The existing mouth tracks are energy-aligned
+      estimates, not phoneme timing, and the transport bias is not measured.
+      See <code>validation/avatar_clock.md</code>.
+    </p>
+  </section>
+</div>
+</main>
+
+<script type="importmap">{"imports":{
+  "three":"../vendor/three/three.module.js",
+  "three/addons/":"../vendor/three/addons/"
+}}</script>
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { TanukiLipSync } from '../src/tanuki-lipsync.js';
+import { PlaybackClockAdapter } from '../src/clock-adapter.js';
+
+const $ = (id) => document.getElementById(id);
+const rows = [];
+function record(name, pass, detail) {
+  rows.push({ name, pass, detail });
+  $('results').innerHTML = rows.map((r) =>
+    `<tr><td>${r.name}</td><td class="${r.pass === null ? 'pend' : r.pass ? 'ok' : 'bad'}">`
+    + `${r.pass === null ? '—' : r.pass ? 'pass' : 'FAIL'}`
+    + `${r.detail ? ' · ' + r.detail : ''}</td></tr>`).join('');
+}
+
+// --- scene -----------------------------------------------------------------
+const canvas = $('c');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x1a1d23);
+const camera = new THREE.PerspectiveCamera(30, 1, 0.01, 100);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x33384a, 1.0));
+const key = new THREE.DirectionalLight(0xffffff, 2.0);
+key.position.set(-1.6, 2.2, 2.6); scene.add(key);
+
+function resize() {
+  const r = canvas.parentElement.getBoundingClientRect();
+  const w = Math.max(1, r.width | 0), h = Math.max(1, r.height | 0);
+  renderer.setSize(w, h, false);
+  camera.aspect = w / h; camera.updateProjectionMatrix();
+}
+addEventListener('resize', resize);
+
+for (const name of ['A', 'I', 'U', 'E', 'O']) {
+  const m = document.createElement('div');
+  m.className = 'meter'; m.innerHTML = `${name}<i><b></b></i>`;
+  $('meters').append(m);
+}
+const meters = [...document.querySelectorAll('.meter b')];
+
+let tanuki = null;
+try {
+  tanuki = await TanukiLipSync.load('../model/tanuki.gltf', new GLTFLoader());
+  scene.add(tanuki.object);
+  const box = new THREE.Box3().setFromObject(tanuki.object);
+  const size = box.getSize(new THREE.Vector3());
+  const mid = box.getCenter(new THREE.Vector3());
+  const y = box.min.y + size.y * 0.68;
+  camera.position.set(mid.x - 0.02, y, mid.z + size.y * 1.55);
+  camera.lookAt(mid.x - 0.02, y - 0.06, mid.z);
+  resize();
+  $('status').textContent = 'model loaded · ready';
+  for (const id of ['run', 'stale', 'reset']) $(id).disabled = false;
+  record('renderer snapshot loads', true, 'model/tanuki.gltf from the local snapshot');
+} catch (e) {
+  $('status').textContent = 'model failed to load';
+  record('renderer snapshot loads', false, String(e.message || e));
+  console.error(e);
+}
+
+const clock = new THREE.Clock();
+renderer.setAnimationLoop(() => {
+  if (tanuki) tanuki.update(clock.getDelta());
+  ['A', 'I', 'U', 'E', 'O'].forEach((v, i) => {
+    meters[i].style.width = `${100 * (tanuki?.current[v] || 0)}%`;
+  });
+  renderer.render(scene, camera);
+});
+
+// --- the check -------------------------------------------------------------
+async function loadTrace() {
+  const res = await fetch('../tests/fixtures/position_trace.json');
+  if (!res.ok) throw new Error(`trace not found (${res.status}); run `
+    + `python tools/make_position_trace.py`);
+  return res.json();
+}
+
+/** A synthetic mouth track spanning the clip, so there is something to sample. */
+function trackFor(duration) {
+  const fps = 30, n = Math.max(2, Math.ceil(duration * fps));
+  const times = [], A = [];
+  for (let i = 0; i < n; i++) {
+    times.push(i / fps);
+    A.push(0.5 + 0.5 * Math.sin(i * 0.9));   // visibly moving, not speech
+  }
+  return { fps, duration, tracks: { A: { times, values: A } } };
+}
+
+$('run').onclick = async () => {
+  rows.length = 0;
+  record('renderer snapshot loads', true, 'model/tanuki.gltf from the local snapshot');
+  let trace;
+  try { trace = await loadTrace(); }
+  catch (e) { record('position trace available', false, e.message); return; }
+  record('position trace available', true,
+    `${trace.frames.length} frames, ${trace.delivered_snapshots} snapshots`);
+
+  const stops = [];
+  const adapter = new PlaybackClockAdapter({
+    onStop: (reason) => { stops.push(reason); tanuki.stop(); },
+  });
+  const duration = trace.clip.duration;
+  tanuki.playTrack(trackFor(duration), adapter.getTime);
+  record('playTrack accepts the adapter clock', tanuki.mode === 'track',
+    `mode=${tanuki.mode}`);
+
+  // Replay in real time so the renderer is genuinely being driven.
+  let moved = 0, sampledMax = 0;
+  for (const frame of trace.frames) {
+    if (frame.advance_ms) await new Promise((r) => setTimeout(r, frame.advance_ms));
+    if (frame.snapshot) adapter.accept(frame.snapshot);
+    const t = adapter.getTime();
+    sampledMax = Math.max(sampledMax, t);
+    if ((tanuki.current.A || 0) > 0.05) moved++;
+  }
+  record('mouth moved while the controller reported playing', moved > 0,
+    `${moved} frames above threshold`);
+  record('sampled position reached the clip', sampledMax > duration * 0.5,
+    `max file time ${sampledMax.toFixed(3)} s of ${duration.toFixed(3)} s`);
+  record('adapter stopped at clip end', stops.includes('clip_end'),
+    stops.join(', ') || 'no stop');
+  await new Promise((r) => setTimeout(r, 120));
+  const closed = (tanuki.current.A || 0) < 0.05 && tanuki.mode === 'idle';
+  record('mouth closed after stop', closed,
+    `mode=${tanuki.mode} A=${(tanuki.current.A || 0).toFixed(3)}`);
+  record('acoustic / visual synchronisation', null, 'NOT measurable here');
+  $('status').textContent = 'replay complete';
+};
+
+$('stale').onclick = async () => {
+  rows.length = 0;
+  const stops = [];
+  const adapter = new PlaybackClockAdapter({
+    staleAfterMs: 250,
+    onStop: (reason) => { stops.push(reason); tanuki.stop(); },
+  });
+  tanuki.playTrack(trackFor(10), adapter.getTime);
+  adapter.accept({ file_time: 0.1, controller_time: 0, rate: 1, playing: true,
+                   duration: 10, generation: 1, pre_roll_s: 0,
+                   ended_reason: null });
+  $('status').textContent = 'controller gone quiet…';
+  await new Promise((r) => setTimeout(r, 700));
+  adapter.getTime();                       // the frame loop also calls this
+  record('stale clock stops the mouth', stops.includes('stale_clock'),
+    stops.join(', ') || 'no stop');
+  await new Promise((r) => setTimeout(r, 120));
+  record('mouth closed rather than frozen open',
+    (tanuki.current.A || 0) < 0.05 && tanuki.mode === 'idle',
+    `mode=${tanuki.mode} A=${(tanuki.current.A || 0).toFixed(3)}`);
+  $('status').textContent = 'stale-clock check complete';
+};
+
+$('reset').onclick = () => {
+  tanuki?.stop(); rows.length = 0;
+  $('results').innerHTML = '<tr><td class="pend">not run</td><td class="pend">—</td></tr>';
+  $('status').textContent = 'ready';
+};
+</script>
+</body></html>

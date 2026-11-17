@@ -1136,6 +1136,7 @@ class OutputPlayer:
         self.faults: list[FaultRecord] = []
 
         self._clip: Clip | None = None
+        self._ended_reason: str | None = None
         self._playing_candidate: PromptCandidate | None = None
         self._pos = 0                      # frames of the active clip emitted
         self._started_at: float | None = None   # audible time of clip frame 0
@@ -1270,6 +1271,7 @@ class OutputPlayer:
             self._clip = clip
             self._pos = 0
             self._started_at = None
+            self._ended_reason = None
             self.state = _PLAYING
             gen = self.generation
         self._log("output_play_requested", clip=clip.as_record(), purpose=kind,
@@ -1370,6 +1372,7 @@ class OutputPlayer:
             self._guard = None
             self._pos = 0
             self._started_at = None
+            self._ended_reason = reason
             self.state = _IDLE
             self.generation += 1
             # Only true when what was actually playing is this attempt's
@@ -1422,6 +1425,7 @@ class OutputPlayer:
                 self._playing_candidate = None
                 self._pos = 0
                 self._started_at = None
+                self._ended_reason = "clip_end"
                 self.state = _IDLE
 
     def _maybe_commit(self, timing: BlockTiming) -> None:
@@ -1480,6 +1484,7 @@ class OutputPlayer:
                 source=f"device_latency:{timing.method};"
                        f"reported={reported:.4f};per_block={device_offset:.4f}",
             )
+        self._ended_reason = None
         cand.commit(now, onset)
         cand.device_offset_s = device_offset
         cand.clip_leading_silence_s = lead
@@ -1517,17 +1522,24 @@ class OutputPlayer:
             if clip is None or self._started_at is None:
                 return PlaybackPosition(file_time=0.0, controller_time=now,
                                         rate=0.0, playing=False, duration=0.0,
-                                        generation=self.generation)
+                                        generation=self.generation,
+                                        ended_reason=self._ended_reason)
             # Frames handed to the device become audible at _started_at onward;
             # what is audible *now* is bounded by both the clip length and how
             # much has actually been written.
             audible = now - self._started_at
             written = self._pos / self.samplerate
             file_time = max(0.0, min(audible, written, clip.duration))
+            # Frames already handed to the device are not audible until they
+            # clear its buffer. While that is still ahead of us the audible
+            # position is pinned at zero, and a consumer extrapolating from
+            # this snapshot has to know not to advance through it.
+            pre_roll = max(0.0, self._started_at - now)
             return PlaybackPosition(file_time=file_time, controller_time=now,
                                     rate=1.0, playing=True,
                                     duration=clip.duration,
-                                    generation=self.generation)
+                                    generation=self.generation,
+                                    pre_roll_s=pre_roll)
 
     @property
     def finished(self) -> list[dict]:
