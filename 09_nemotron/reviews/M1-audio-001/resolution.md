@@ -528,3 +528,20 @@ the options were put to the user rather than decided here.
 Deferred, unchanged: **C12**, **C16**, **C18**, all to M3 with the developer
 as owner; the M3/M6 crash-recovery gate stays unpassed. M1 as a milestone also
 still lacks the avatar clock-adapter checkpoint.
+
+## Round 4 — via the combined review M1-avatar-002 / R05
+
+R05 verified round-3 F02, F03 and F04 fixed and F01's crash closed, and found
+one new Major in the same probe loops (an unhandled `AudioFault` from `arm()`
+when a probe commits near the wait limit, and no test driving either loop),
+plus two Minors. The bounded loop was already at its cap; on 2026-11-20 the
+user chose one more fix cycle rather than carrying the Major into M3.
+
+Findings, fixes and revert checks are recorded with the rest of R05's in
+[M1-avatar-002/resolution.md](../M1-avatar-002/resolution.md) (IDs
+`M1-avatar-002-R05-F01` to `F03`). In short, the probe loop now exists once,
+as `audio_io.run_commit_probe`, with separately bounded waits, an explicit
+late-commit outcome and a reported stuck-clip outcome. Both callers turn any
+probe failure into a blocking FAIL, and new loop-level tests fail on each
+revert. `M1-audio-001` stays **not complete** until fresh review verifies this
+snapshot.

@@ -16,8 +16,10 @@ Python 3.13 with `pip install -r requirements.txt` (numpy, sounddevice). From
 this folder:
 
 ```text
-python -m unittest discover -s tests -p "test_*.py"   # 139 tests, no devices
+python -m unittest discover -s tests -p "test_*.py"   # 180 tests, no devices
+node --test tests/test_clock_adapter.mjs              # 30 tests, avatar clock
 python tools/check_audio.py                           # device inventory + synthetic
+python tools/verify_snapshot.py --baseline            # renderer snapshot provenance
 python preflight.py --config config/experiment.json   # session preflight
 ```
 
@@ -60,7 +62,8 @@ Two measured facts about this PC, recorded in
 - [Elephant role](reviewers/ELEPHANT.md) and [Goldfish reviewer prompt](reviewers/GOLDFISH.md): reusable instructions for the implementer and independent reviewer.
 - [Development status](DEVELOPMENT_STATUS.md): current milestone and next step.
 - [Review index](reviews/INDEX.md) and [packet template](reviews/CHECKPOINT_TEMPLATE.md): evidence and review records.
-- [Engineering decisions](decisions.md): implementation choices D1-D8, their alternatives, and which research decisions they depend on.
+- [Engineering decisions](decisions.md): implementation choices D1-D10, their alternatives, and which research decisions they depend on.
+- [Avatar clock evidence](validation/avatar_clock.md): the renderer snapshot, the browser clock adapter, and what remains unverified (visual synchronisation is NOT_RUN).
 - [AGENTS.md](AGENTS.md): folder-level instructions for coding agents that support automatic discovery.
 - [Workflow validation](reviews/WORKFLOW_VALIDATION.md): review outcome and checks for these reusable instructions.
 

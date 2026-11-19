@@ -50,11 +50,15 @@ import audio_io  # noqa: E402
 from audio_io import (  # noqa: E402
     CAPTURE_RATE,
     DEFAULT_BLOCKSIZE,
+    PROBE_COMMITTED_LATE,
+    PROBE_STUCK,
+    AudioFault,
     ContinuousRecorder,
     FakeBackend,
     OutputPlayer,
     SoundDeviceBackend,
     inventory,
+    run_commit_probe,
     silence_clip,
     tone_clip,
 )
@@ -413,23 +417,33 @@ def commit_distribution(*, trials: int = 30, device=None,
     leads: list[float] = []
     skipped_no_onset = 0
     early = timed_out = 0
+    late = 0
     try:
         for i in range(trials):
-            player.begin_attempt(f"probe-{i}")
-            deadline = clock.now() + 0.08
-            cand = PromptCandidate(trial_id=f"probe-{i}", threshold_s=0.5,
-                                   deadline=deadline, scheduled_at=clock.now())
-            player.arm(clip, cand)
-            limit = deadline + clip_s + 0.5
-            while not cand.committed and clock.now() < limit:
-                time.sleep(0.002)
-            if not cand.committed:
-                # Release the slot; an armed leftover crashes the next probe's
-                # begin_attempt() rather than failing cleanly (R04-F01).
-                player.cancel_candidate("probe_timeout")
+            # Shared with the session preflight so the two loops cannot drift
+            # apart; its waits are separately bounded and it reports a clip
+            # that never finishes instead of arming over it (R05-F01).
+            try:
+                probe = run_commit_probe(player, clip, f"probe-{i}",
+                                         clock=clock, sleep=time.sleep,
+                                         threshold_s=0.5, slack_s=0.5)
+            except AudioFault as exc:
+                return [_result("commit_distribution", FAIL,
+                                f"probe {i} raised {type(exc).__name__}: {exc}",
+                                failed_trial=i, committed=len(commit_delays),
+                                timed_out=timed_out)]
+            if probe.outcome == PROBE_STUCK:
+                return [_result("commit_distribution", FAIL,
+                                f"probe {i}: {probe.detail}", failed_trial=i,
+                                committed=len(commit_delays),
+                                timed_out=timed_out)]
+            if not probe.committed:
                 timed_out += 1
                 continue
-            delay = (cand.committed_at - deadline) * 1000.0
+            cand = probe.candidate
+            if probe.outcome == PROBE_COMMITTED_LATE:
+                late += 1
+            delay = (cand.committed_at - probe.deadline) * 1000.0
             if delay < 0:
                 early += 1
             commit_delays.append(delay)
@@ -442,13 +456,6 @@ def commit_distribution(*, trials: int = 30, device=None,
                 device_offsets.append(cand.device_offset_s * 1000.0)
                 leads.append(cand.clip_leading_silence_s * 1000.0)
                 onset_delays.append(cand.onset_delay_s * 1000.0)
-            # Let the clip finish before arming the next one.
-            while player.state != "idle" and clock.now() < limit:
-                time.sleep(0.002)
-            outcome = player.cancel_candidate("probe_cleanup")
-            if outcome.outcome not in ("too_late_committed", "nothing_armed"):
-                return [_result("commit_distribution", FAIL,
-                                f"probe {i} ended in state {outcome.outcome}")]
     finally:
         player.stop("probe_complete")
         player.close()
@@ -467,8 +474,10 @@ def commit_distribution(*, trials: int = 30, device=None,
         f"n={trials} commit delay median "
         f"{statistics.median(commit_delays):.2f} ms, p95 "
         f"{_percentile(commit_delays, 0.95):.2f} ms, max "
-        f"{max(commit_delays):.2f} ms",
+        f"{max(commit_delays):.2f} ms"
+        + (f"; {late} committed only in the timeout race" if late else ""),
         n=trials,
+        committed_late=late,
         median_ms=statistics.median(commit_delays),
         p95_ms=_percentile(commit_delays, 0.95),
         max_ms=max(commit_delays),

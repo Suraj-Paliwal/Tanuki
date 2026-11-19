@@ -17,6 +17,10 @@ adapter has to extrapolate to them, and the expected value is the controller's
 own position at that instant - ground truth from the Python side, not the
 adapter's formula restated. If the two drift apart, the JS test fails.
 
+Frame 0 is sampled before any callback (the clip-starting snapshot) and the
+assertion window runs through the audible tail of the clip, so both ends of
+the clip are inside the cross-check.
+
 No device is opened and nothing is recorded.
 """
 
@@ -45,6 +49,21 @@ BLOCK_MS = BLOCK / RATE * 1000.0
 DELIVER_EVERY = 5
 
 
+FIXTURE = (Path(__file__).resolve().parents[1] / "tests" / "fixtures"
+           / "position_trace.json")
+
+
+def render(trace: dict) -> str:
+    """The exact bytes written to the fixture.
+
+    ``tests/test_timing.py`` regenerates the trace and compares it with the
+    committed file through this function, so a code change that alters what
+    the controller publishes fails the suite until the fixture is regenerated
+    (R05-F07): the fixture is a standing guard, not a one-time discovery.
+    """
+    return json.dumps(trace, indent=2, ensure_ascii=False) + "\n"
+
+
 def build_trace(clip_s: float = 0.40, lead_s: float = 0.05,
                 output_latency: float = 0.020) -> dict:
     clock = ManualClock(0.0)
@@ -61,8 +80,19 @@ def build_trace(clip_s: float = 0.40, lead_s: float = 0.05,
 
     frames: list[dict] = []
     expect_stops: list[str] = []
-    blocks = int(round((clip_s + lead_s) / (BLOCK / RATE))) + 6
-    for i in range(blocks):
+    # Frame 0 is sampled the instant play() returns, before any callback has
+    # carried the clip: the moment a publisher naturally takes its first
+    # snapshot. The controller used to publish that as "not playing", which
+    # the adapter read as a stop for the whole clip (R05-F05), and a trace
+    # that pumped before its first sample could not see it.
+    pending = player.position().as_record()
+    frames.append({"advance_ms": 0.0, "snapshot": pending,
+                   "expect_file_time": round(pending["file_time"], 9)})
+    # Enough blocks to cover the clip, its audible tail (one output latency
+    # after the last block is written) and a few idle blocks after that.
+    blocks = int(round((clip_s + lead_s + output_latency)
+                       / (BLOCK / RATE))) + 4
+    for i in range(1, blocks + 1):
         stream.pump(1)
         position = player.position()
         record = position.as_record()
@@ -70,8 +100,9 @@ def build_trace(clip_s: float = 0.40, lead_s: float = 0.05,
         if i % DELIVER_EVERY == 0:
             frame["snapshot"] = record
         # The controller's own position at this instant is the expectation.
-        # While it is still playing the adapter must match it; once the
-        # controller reports stopped, the adapter holds its last position
+        # While it is playing - which now includes the audible tail after the
+        # last block is written (R05-F06) - the adapter must match it; once
+        # the controller reports stopped, the adapter holds its last position
         # instead, so only the playing frames are asserted.
         if record["playing"]:
             frame["expect_file_time"] = round(record["file_time"], 9)
@@ -117,10 +148,9 @@ def build_trace(clip_s: float = 0.40, lead_s: float = 0.05,
 
 def main() -> int:
     trace = build_trace()
-    out = Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "position_trace.json"
+    out = FIXTURE
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(trace, indent=2, ensure_ascii=False) + "\n",
-                   encoding="utf-8")
+    out.write_text(render(trace), encoding="utf-8")
     print(f"wrote {out}")
     print(f"  {len(trace['frames'])} frames, "
           f"{trace['delivered_snapshots']} snapshots delivered, "

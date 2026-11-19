@@ -1,6 +1,6 @@
 # Development status
 
-Updated: 2026-11-17 (Japan time).
+Updated: 2026-11-20 (Japan time).
 
 ## Current state
 
@@ -14,9 +14,23 @@ Updated: 2026-11-17 (Japan time).
 - **Session preflight implemented** (`preflight.py`, `config/experiment.json`):
   the start-of-session validation and measurement step required by `goal.md`
   §6, now part of the application rather than a bench script.
-- 153 tests pass (74 timing, 53 audio I/O, 26 preflight). Executed device
-  evidence is in `validation/audio_spike.md` and
-  `validation/preflight_wasapi.json`.
+- **The avatar clock adapter and renderer snapshot now exist**
+  (`M1-avatar-002`): the piece `goal.md` §7 requires, whose absence R01, R02
+  and R03 all gave as the reason M1 could not be complete.
+- **R05 returned NEEDS_FIXES on both scopes; all 13 findings are fixed**
+  (`reviews/M1-avatar-002/resolution.md`). Scope A: the probe loop is now one
+  shared helper (`audio_io.run_commit_probe`) with loop-level tests. Scope B:
+  the adapter has an explicit `arm()` lifecycle with latched stops and a
+  staleness clock that starts at arm; the controller publishes a starting clip
+  as playing and keeps publishing playing through the audible tail
+  (`audible_end_s`, `OutputPlayer.audible_end`); the cross-language fixture
+  is guarded against drift. The user chose one more fix cycle for scope A
+  despite the bounded-loop cap.
+- **210 tests pass**: 180 Python (77 timing, 65 audio I/O, 35 preflight,
+  3 snapshot) and 30 JavaScript (avatar clock adapter, Node's test runner).
+  Every R05 fix was also reverted in a scratch copy and its test failed.
+  Executed evidence is in `validation/audio_spike.md`,
+  `validation/avatar_clock.md` and `validation/preflight_wasapi.json`.
 - The user committed `b4fd62f M1-audio-001` and `0198546 M1-fix`; the
   coordinator has made no commits. Round-2 code is inside `0198546`; the
   evidence and record edits after it are uncommitted.
@@ -32,7 +46,12 @@ Updated: 2026-11-17 (Japan time).
 | `tools/check_audio.py` | Bench tool: inventory, synthetic checks, host-API survey, commit-timing distributions |
 | `requirements.txt` | Exact pins (`numpy==2.3.5`, `sounddevice==0.5.5`) |
 | `decisions.md` | Engineering decisions D1-D8 with alternatives and dependencies |
-| `tests/` | 153 tests, all on the fake backend with a manual clock |
+| `src/clock-adapter.js` | Browser clock adapter: drives `playTrack` from the controller's playback clock, with a stale-update fault and `stop()` on every ending |
+| `src/` + `model/` + `vendor/` | Minimal renderer snapshot copied from the baseline; `asset-provenance.json` (tracked) records source paths and hashes, the 21 MB of assets are gitignored |
+| `tools/verify_snapshot.py` | Verifies the snapshot against its provenance record |
+| `tools/make_position_trace.py` | Records a real `OutputPlayer` trace so the JS adapter is checked against actual controller output |
+| `tools/avatar_clock_check.html` | Bench harness for the real renderer. **Not yet opened** |
+| `tests/` | 210 tests: 180 Python on the fake backend with a manual clock, 30 JavaScript on an injected clock |
 | `validation/` | Executed evidence, including what was NOT_RUN and why |
 
 ### Measured facts about this PC, not worked around
@@ -57,42 +76,83 @@ Updated: 2026-11-17 (Japan time).
 
 ## Active checkpoint
 
-`M1-audio-001`, round 3 (fix verification over the complete tree, preflight
-included for its first review).
+Fix verification of every R05 finding, both scopes, under one packet
+(`reviews/M1-avatar-002/packet-round-2.md`):
 
-- Round-1 packet: `reviews/M1-audio-001/packet.md`; reports from `R01`
-  (focused) and `R02` (critic), both **NEEDS_FIXES**.
-- Findings, dispositions and fixes: `reviews/M1-audio-001/resolution.md`.
-- Round-2 packet and report: `packet-round-2.md`, `R03` → **NEEDS_FIXES**;
-  findings F01-F10 and their fixes are the round-2 section of
-  `resolution.md`.
-- Round-3 packet: `reviews/M1-audio-001/packet-round-3.md`; reviewer `R04`
-  dispatched 2026-11-17, **verdict pending**. Target files must not be edited
-  until the report is in. If round 3 does not converge, the workflow says stop
-  changing the disputed scope and present alternatives to the user.
+- **Scope A — `M1-audio-001`.** R05-F01 (Major) and F02, F03. The bounded loop
+  had reached its cap; on 2026-11-20 the user chose one more fix cycle over
+  carrying F01 into M3.
+- **Scope B — `M1-avatar-002`.** R05-F04 … F12; F13 (packet hygiene) is met by
+  the packet itself.
+
+Reviewer `R06` dispatched 2026-11-20, fresh context, **two separate verdicts
+requested**. Target files must not be edited until the report is in; the
+digests in the packet are the authority.
+
+- R05's report: `reviews/M1-avatar-002/goldfish-combined-R05-round-1.md` →
+  scope A **NEEDS_FIXES** (1 Major, 2 Minor), scope B **NEEDS_FIXES**
+  (4 Major, 6 Minor).
+- Findings, fixes and revert checks: `reviews/M1-avatar-002/resolution.md`;
+  pointer from round 4 of `reviews/M1-audio-001/resolution.md`.
+- Earlier rounds of `M1-audio-001` (R01-R04) are unchanged in
+  `reviews/M1-audio-001/`.
 - Unresolved, deferred to M3 with the developer as owner: **C12** (`.partial`
   reports zero frames after an abrupt kill), **C16** (nothing binds
   `PromptCandidate.deadline` to the `PauseTimer`), **C18** (publication is
   atomic but not `fsync`-durable). All three leave the M3/M6 crash-recovery
-  gate unpassed.
+  gate unpassed. Also for M3/M4's transport design: nothing binds the
+  adapter's 250 ms `staleAfterMs` to a required snapshot cadence.
 
 ## Next action
 
-1. Collect the `R04` report; record its outcome as round 3 in
-   `reviews/M1-audio-001/resolution.md`. If it passes for scope, mark
-   `M1-audio-001` complete in `reviews/INDEX.md`; if not, stop editing the
-   disputed scope and present the alternatives to the user.
-2. (Folded into round 3: the preflight is reviewed in the same packet.)
-3. Then `M1-avatar-002`: bring in the minimal renderer/asset snapshot with
-   `asset-provenance.json` and drive `TanukiLipSync.playTrack(track, getTime)`
-   from `OutputPlayer.position()` through the bounded-interpolation and
-   stale-update rules in `timing.interpolate`. **M1 is not complete without
-   this**; both round-1 reviewers noted its absence.
-4. Raise the microphone with the user as a hardware decision, and re-run the
-   device measurements at the physical machine.
+1. Collect R06's report
+   (`reviews/M1-avatar-002/goldfish-fix-verification-R06-round-2.md`), recheck
+   the packet digests, and record the outcome in
+   `reviews/M1-avatar-002/resolution.md` and `reviews/INDEX.md`. Mark a scope
+   complete only if its verdict passes. If scope A fails again, it is the
+   user's call whether to carry it into M3. The loop is past its cap.
+2. Open `tools/avatar_clock_check.html` in a browser on this PC and record the
+   result in `validation/avatar_clock.md`. It is the only check that exercises
+   the adapter against the real renderer, it needs an operator, and it plays no
+   audio. Serve the folder over `http://127.0.0.1` rather than `file://`, or
+   the module imports and the glTF fetch will be blocked.
+3. Re-run `tools/check_audio.py --commit-trials 20` and `preflight.py` on the
+   real device, at the physical machine rather than over TeamViewer. Both now
+   go through the shared probe helper and have not been executed on hardware
+   since the refactor.
+4. Then M2 (stimulus preparation against the local AivisSpeech engine, writing
+   only into `.preparation/`) or M3 (the experiment state machine), whichever
+   the user prefers. M3 has the larger dependency on decisions still open, and
+   it is where `OutputPlayer.audible_end` gets used as the recall time zero.
+5. Raise the microphone with the user as a hardware decision.
 
 Do not install Nemotron; M7/M8 come after the experiment's engineering
 acceptance.
+
+## Avatar clock adapter behaviour
+
+- The renderer plays **no audio**. The controller owns playback; the browser
+  gets position snapshots and drives `playTrack(track, getTime)`, which is
+  audio-free by design.
+- `getTime` returns **file time** — seconds from the start of the complete WAV
+  including its leading silence — because that is how the mouth track is
+  indexed.
+- The adapter extrapolates from **snapshot arrival**, not from the
+  controller's clock, because the two processes do not share a time base
+  (`decisions.md` D9). The cost is a mouth that lags by the transport latency;
+  that bias is stated and never subtracted out.
+- A **stale clock is a fault**: past 250 ms with no update the adapter stops
+  and reports it, rather than extrapolating forever and holding the mouth open
+  on a silent Tanuki. An external-clock track has no end event of its own.
+- The controller publishes two things the renderer cannot infer
+  (`decisions.md` D10): `pre_roll_s`, so the mouth does not move during the
+  output latency before a clip is audible, and `ended_reason`, so clip end is
+  distinguishable from an operator stop on an idle snapshot where `file_time`
+  and `duration` are both zero. Both were found by the cross-language trace
+  check, not by inspection.
+- **Visual synchronisation is unverified and NOT_RUN.** Nothing here plays
+  audio, so no claim about the mouth matching speech follows from any test
+  passing.
 
 ## Session preflight behaviour
 
@@ -130,7 +190,7 @@ python preflight.py --config config/experiment.json --check-capture   # opens th
 | Milestone | Status | Evidence / pending condition |
 |---|---|---|
 | M0 specification/review | Development draft reviewed; research-owned decisions open | `goal.md`, historical design review |
-| M1 audio feasibility | Device/timing layer in fix-verification review; preflight built but unreviewed; avatar adapter not started | `validation/audio_spike.md`, `reviews/M1-audio-001/`; capture BLOCKED, acoustic onset NOT_RUN |
+| M1 audio feasibility | Device/timing layer, preflight and avatar adapter all built; one combined review in flight | `validation/audio_spike.md`, `validation/avatar_clock.md`, `reviews/`; capture BLOCKED, acoustic onset and visual synchronisation NOT_RUN |
 | M2 materials/tooling | Candidate text only | No final ten-story manifest, frozen recordings or approved allocation. The preflight will hash-verify a manifest once one exists |
 | M3 controller | Not started | Device layer, guard contract and preflight now exist for it to build on; C12 and C16 land here |
 | M4 interface | Not started for new system | Reusable baseline exists in `08_avisspeech` |

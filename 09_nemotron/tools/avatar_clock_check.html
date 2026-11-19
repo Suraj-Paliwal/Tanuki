@@ -172,6 +172,7 @@ $('run').onclick = async () => {
     onStop: (reason) => { stops.push(reason); tanuki.stop(); },
   });
   const duration = trace.clip.duration;
+  adapter.arm();                           // required before every playTrack
   tanuki.playTrack(trackFor(duration), adapter.getTime);
   record('playTrack accepts the adapter clock', tanuki.mode === 'track',
     `mode=${tanuki.mode}`);
@@ -206,6 +207,7 @@ $('stale').onclick = async () => {
     staleAfterMs: 250,
     onStop: (reason) => { stops.push(reason); tanuki.stop(); },
   });
+  adapter.arm();
   tanuki.playTrack(trackFor(10), adapter.getTime);
   adapter.accept({ file_time: 0.1, controller_time: 0, rate: 1, playing: true,
                    duration: 10, generation: 1, pre_roll_s: 0,
@@ -219,7 +221,25 @@ $('stale').onclick = async () => {
   record('mouth closed rather than frozen open',
     (tanuki.current.A || 0) < 0.05 && tanuki.mode === 'idle',
     `mode=${tanuki.mode} A=${(tanuki.current.A || 0).toFixed(3)}`);
-  $('status').textContent = 'stale-clock check complete';
+
+  // R05-F04: the controller never sends a first snapshot at all.
+  const quiet = [];
+  const silent = new PlaybackClockAdapter({
+    staleAfterMs: 250,
+    onStop: (reason) => { quiet.push(reason); tanuki.stop(); },
+  });
+  silent.arm();
+  tanuki.playTrack(trackFor(10), silent.getTime);
+  $('status').textContent = 'no first snapshot…';
+  await new Promise((r) => setTimeout(r, 700));
+  silent.getTime();
+  record('no first snapshot stops the mouth', quiet.includes('stale_clock'),
+    quiet.join(', ') || 'no stop');
+  await new Promise((r) => setTimeout(r, 120));
+  record('mouth closed rather than parked on a speaking pose',
+    (tanuki.current.A || 0) < 0.05 && tanuki.mode === 'idle',
+    `mode=${tanuki.mode} A=${(tanuki.current.A || 0).toFixed(3)}`);
+  $('status').textContent = 'stale-clock checks complete';
 };
 
 $('reset').onclick = () => {

@@ -8,7 +8,14 @@ third-party library do not belong in this repository. `asset-provenance.json`
 is tracked instead, so this is how the snapshot is shown to be the bytes it
 claims to be - and how it can be rebuilt from the baseline on another machine.
 
-Exits non-zero on any mismatch, so it can gate a release check.
+It checks the record as a closure, not only as a list: every file under the
+untracked directories (`model/`, `vendor/`) must be in the record. Those
+directories are invisible to Git and the bench page maps `three/addons/` onto
+`vendor/` wholesale, so an unlisted file there would be loadable, unseen and
+unverified (R05-F11).
+
+Exits non-zero on any mismatch or unexpected file, so it can gate a release
+check.
 """
 
 from __future__ import annotations
@@ -20,6 +27,8 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+#: Directories that are excluded from Git and so are covered only by this tool.
+UNTRACKED_DIRS = ("model", "vendor")
 
 
 def sha256(path: Path) -> str:
@@ -28,6 +37,22 @@ def sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1 << 20), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def unexpected_files(root: Path, assets: list[dict]) -> list[str]:
+    """Files under the untracked snapshot directories that no record lists."""
+    listed = {a["path"].replace("\\", "/") for a in assets}
+    extra = []
+    for name in UNTRACKED_DIRS:
+        base = root / name
+        if not base.exists():
+            continue
+        for path in sorted(base.rglob("*")):
+            if path.is_file():
+                rel = path.relative_to(root).as_posix()
+                if rel not in listed:
+                    extra.append(rel)
+    return extra
 
 
 def main(argv=None) -> int:
@@ -63,6 +88,7 @@ def main(argv=None) -> int:
             elif sha256(source) != asset["sha256"]:
                 baseline_changed.append(f"{asset['source']} (differs)")
 
+    unexpected = unexpected_files(ROOT, assets)
     total_bytes = sum(a["bytes"] for a in assets)
     if not args.quiet:
         print(f"snapshot version {manifest['snapshot_version']}, "
@@ -73,11 +99,12 @@ def main(argv=None) -> int:
         print(f"  {tracked} tracked in Git, {len(assets) - tracked} "
               f"excluded by .gitignore and verified by hash only")
     for label, items in (("missing", missing), ("changed", changed),
+                         ("unexpected", unexpected),
                          ("baseline drifted", baseline_changed)):
         for item in items:
             print(f"  {label.upper()}: {item}")
 
-    if missing or changed:
+    if missing or changed or unexpected:
         print("FAIL: the snapshot does not match its provenance record",
               file=sys.stderr)
         return 1

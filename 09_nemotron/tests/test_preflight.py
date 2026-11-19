@@ -86,15 +86,31 @@ class PreflightHarness(unittest.TestCase):
     microseconds with no audio hardware.
     """
 
-    def _run(self, config, inventory=None, output_latency=0.020):
+    def _run(self, config, inventory=None, output_latency=0.020,
+             stall=None):
+        """``stall(call_index)`` -> True drops that sleep's blocks.
+
+        A dropped block advances the clock and the device clock but never
+        reaches the callback: what a stalled or redirected endpoint looks like
+        from the controller's side.
+        """
         clock = ManualClock(1000.0)
         backend = FakeBackend(clock, output_latency=output_latency)
+        calls = [0]
 
         def sleep(seconds):
             blocks = max(1, int(round(seconds / (BLOCK / RATE))))
             active = [s for s in backend.streams if s.active]
             if not active:
                 clock.advance(seconds)
+                return
+            index = calls[0]
+            calls[0] += 1
+            if stall is not None and stall(index):
+                for _ in range(blocks):
+                    for stream in active:
+                        stream._device_time += stream.block_s
+                    clock.advance(BLOCK / RATE)
                 return
             backend.pump_all(blocks)
 
@@ -356,6 +372,90 @@ class StimulusAndStorageTest(PreflightHarness):
         check = self._check(report, "disk_space")
         self.assertEqual(check.status, FAIL)
         self.assertTrue(check.blocks_session)
+
+
+class ProbeLoopTest(PreflightHarness):
+    """The commit-timing loop itself, on the hardware failures it must report.
+
+    R04-F01 and R05-F01: a probe that times out, or commits right at the end
+    of its wait, must end in a reported FAIL or a recorded figure - never in a
+    traceback from the next probe's ``begin_attempt`` or ``arm``.
+    """
+
+    def _cfg(self, sid, trials=3):
+        return PreflightConfig(session_id=sid, output_device_key=WASAPI_KEY,
+                               commit_trials=trials, samplerate=RATE,
+                               blocksize=BLOCK)
+
+    def test_a_probe_that_commits_just_before_its_limit_is_waited_out(self):
+        """The R05-F01 shape: commit lands inside the last clip-length before
+        the shared limit, so the old idle wait exited at once and the next
+        ``arm`` met a still-playing clip."""
+        # Call 0 is the stream warm-up. The first probe's limit is about
+        # 0.63 s after it arms (80 ms lead + clip + 0.5 s); stalling the first
+        # 60 polls (10 ms each) puts its commitment at ~0.60 s.
+        report = self._run(self._cfg("p1"), stall=lambda i: 1 <= i <= 60)
+        delay = self._check(report, "commit_delay")
+        self.assertEqual(delay.status, PASS)
+        self.assertEqual(delay.data["n"], 3)
+        self.assertEqual(delay.data["committed_late"], 0)
+        self.assertGreater(delay.data["max_ms"], 450.0)
+        self.assertNotIn("commit_timing", [c.name for c in report.checks])
+
+    def test_probes_that_never_commit_are_a_reported_blocking_failure(self):
+        """No callbacks at all after warm-up: every probe times out. Each must
+        release its slot, or the second probe's ``begin_attempt`` raises."""
+        report = self._run(self._cfg("p2"), stall=lambda i: i >= 1)
+        check = self._check(report, "commit_timing")
+        self.assertEqual(check.status, FAIL)
+        self.assertTrue(check.blocks_session)
+        self.assertEqual(check.data["timed_out"], 3)
+        self.assertEqual(check.data["committed"], 0)
+        self.assertIn("3 timed out", check.detail)
+        self.assertFalse(report.may_start)
+
+    def test_a_clip_that_never_finishes_is_a_reported_failure(self):
+        """Commit normally, then the device stops calling back mid-clip. The
+        loop must say so rather than arm the next probe over a playing clip."""
+        # Deadline is 80 ms after arming: polls 1-11 deliver the commit (at
+        # poll 9 or 10, depending on float rounding at the deadline) and the
+        # first blocks of the 60 ms clip, then the stream stalls for good.
+        report = self._run(self._cfg("p3"), stall=lambda i: i >= 12)
+        check = self._check(report, "commit_timing")
+        self.assertEqual(check.status, FAIL)
+        self.assertTrue(check.blocks_session)
+        self.assertEqual(check.data["failed_trial"], 0)
+        self.assertIn("probe 0", check.detail)
+        self.assertIn("had not finished", check.detail)
+
+
+class ProbeReportingTest(unittest.TestCase):
+    """The reporting half, on inputs the device loop cannot easily produce."""
+
+    def _pre(self, **kw):
+        cfg = PreflightConfig(session_id="r", commit_trials=2, **kw)
+        return SessionPreflight(cfg, clock=ManualClock(0.0),
+                                inventory_fn=fake_inventory)
+
+    def test_no_onset_estimate_is_not_run_and_does_not_raise(self):
+        """R05-F02: the empty case used to raise one check before its guard."""
+        out = self._pre()._report_probes(
+            commit=[1.0, 2.0], offset=[], onset=[], early=0, timed_out=0,
+            late=0, skipped_no_onset=2)
+        by_name = {c.name: c for c in out}
+        self.assertEqual(by_name["onset_delay_target"].status, NOT_RUN)
+        self.assertEqual(by_name["device_offset"].status, NOT_RUN)
+        self.assertEqual(
+            by_name["onset_delay_target"].data["skipped_no_onset"], 2)
+        self.assertIn("2 skipped", by_name["onset_delay_target"].detail)
+
+    def test_too_few_commitments_is_a_blocking_failure(self):
+        out = self._pre()._report_probes(
+            commit=[1.0], offset=[20.0], onset=[30.0], early=0, timed_out=1,
+            late=0, skipped_no_onset=0)
+        self.assertEqual([c.name for c in out], ["commit_timing"])
+        self.assertEqual(out[0].status, FAIL)
+        self.assertTrue(out[0].blocks_session)
 
 
 class ParticipantConfigurationTest(PreflightHarness):

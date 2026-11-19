@@ -1296,6 +1296,16 @@ class PlaybackPosition:
     #: player knows which happened, so it says, rather than leaving the
     #: renderer to guess from whether ``file_time`` reached ``duration``.
     ended_reason: str | None = None
+    #: Seconds from ``controller_time`` until the clip is completely audible,
+    #: or ``None`` when nothing is playing.
+    #:
+    #: The last samples of a clip are handed to the device one output latency
+    #: before they can be heard, so "the controller has finished writing" and
+    #: "the participant has finished hearing it" are different instants. The
+    #: protocol depends on the second one: goal.md section 6 defines recall
+    #: time zero as the instruction's *audible* end, and the mouth must keep
+    #: moving until the sound actually stops.
+    audible_end_s: float | None = None
     #: Seconds until the clip becomes audible, from ``controller_time``. Zero
     #: once sound is actually coming out.
     #:
@@ -1319,18 +1329,33 @@ class PlaybackPosition:
             "generation": self.generation,
             "method": self.method,
             "pre_roll_s": self.pre_roll_s,
+            "audible_end_s": self.audible_end_s,
             "ended_reason": self.ended_reason,
         }
 
 
 def interpolate(snapshot: PlaybackPosition, now: float, *,
-                stale_after_s: float = 0.25) -> float:
+                stale_after_s: float = 0.25,
+                floor: float | None = None) -> float:
     """Bounded interpolation of a playback position.
 
-    Mirrors what the browser adapter must do: extrapolate from the last
-    snapshot, clamp to the clip, and raise instead of extrapolating across a
-    stale update. An external-clock track has no end event of its own, so a
-    silently frozen clock would otherwise hold the mouth open indefinitely.
+    The same arithmetic as ``src/clock-adapter.js``: extrapolate from the last
+    snapshot, hold through the remaining pre-roll, clamp to the clip, and
+    refuse to extrapolate across a stale update. An external-clock track has no
+    end event of its own, so a silently frozen clock would otherwise hold the
+    mouth open indefinitely.
+
+    ``floor`` is the previous answer for the same clip, when the caller has
+    one; the result never drops below it. That is the adapter's monotonic
+    guard, which keeps a snapshot landing slightly behind an extrapolated point
+    from moving the position backwards. Being a pure function, this one can
+    only apply it when told the previous value.
+
+    Two differences from the adapter are intended (R05-F12): this measures age
+    on the controller clock (``now - controller_time``) where the adapter, by
+    D9, measures it from snapshot arrival on the browser clock; and a stale
+    snapshot raises here, where the adapter records a fault, stops the mouth
+    and holds its last position.
     """
     age = now - snapshot.controller_time
     if age < -1e-9:
@@ -1345,9 +1370,11 @@ def interpolate(snapshot: PlaybackPosition, now: float, *,
     effective_age = max(0.0, age - snapshot.pre_roll_s)
     t = snapshot.file_time + effective_age * snapshot.rate
     if t < 0.0:
-        return 0.0
+        t = 0.0
     if t > snapshot.duration:
-        return snapshot.duration
+        t = snapshot.duration
+    if floor is not None and t < floor:
+        t = floor
     return t
 
 

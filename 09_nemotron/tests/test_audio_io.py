@@ -28,12 +28,17 @@ from audio_io import (  # noqa: E402
     CANCEL_NOTHING_ARMED,
     CANCEL_REMOVED,
     CANCEL_TOO_LATE,
+    PROBE_COMMITTED,
+    PROBE_COMMITTED_LATE,
+    PROBE_STUCK,
+    PROBE_TIMED_OUT,
     AudioFault,
     ContinuousRecorder,
     FakeBackend,
     OutputPlayer,
     WaveSink,
     load_clip,
+    run_commit_probe,
     silence_clip,
     tone_clip,
     write_wav,
@@ -470,6 +475,105 @@ class OutputPlayerTest(unittest.TestCase):
             self.player.arm(clip, self._candidate(self.clock.now()))
 
 
+class CommitProbeTest(unittest.TestCase):
+    """``run_commit_probe``: the loop the preflight and bench tool share.
+
+    Its one promise is that the next probe can always be armed, or the result
+    says why not (R04-F01, R05-F01).
+    """
+
+    def setUp(self):
+        self.clock = ManualClock(500.0)
+        self.backend = FakeBackend(self.clock, output_latency=0.020)
+        self.player = OutputPlayer(backend=self.backend, clock=self.clock,
+                                   samplerate=RATE, blocksize=BLOCK)
+        self.player.open()
+        self.stream = self.backend.streams[-1]
+        self.clip = tone_clip(0.05, lead_silence=0.01, samplerate=RATE)
+        self.stalled = False
+
+    def tearDown(self):
+        self.player.close()
+
+    def _sleep(self, _seconds):
+        self.stream.pump(1, drop=self.stalled)
+
+    def _probe(self, trial):
+        return run_commit_probe(self.player, self.clip, trial,
+                                clock=self.clock, sleep=self._sleep,
+                                threshold_s=0.5)
+
+    def test_a_normal_probe_commits_finishes_and_leaves_the_slot_clean(self):
+        result = self._probe("a")
+        self.assertEqual(result.outcome, PROBE_COMMITTED)
+        self.assertGreaterEqual(result.candidate.committed_at, result.deadline)
+        self.assertEqual(self.player.state, "idle")
+        self.assertEqual(self._probe("b").outcome, PROBE_COMMITTED)
+
+    def test_a_timeout_releases_the_slot_for_the_next_probe(self):
+        self.stalled = True
+        result = self._probe("a")
+        self.assertEqual(result.outcome, PROBE_TIMED_OUT)
+        self.assertFalse(result.committed)
+        self.assertTrue(result.candidate.cancelled)
+        self.stalled = False
+        self.assertEqual(self._probe("b").outcome, PROBE_COMMITTED)
+
+    def test_a_commit_in_the_timeout_race_is_late_not_a_timeout(self):
+        """R05-F01b: the commit lands between the wait's last check and the
+        cancel. The clip is playing, so it must be waited out and reported as
+        committed, and the next probe must still arm."""
+        self.stalled = True
+        real_cancel = self.player.cancel_candidate
+
+        def racing_cancel(reason):
+            if reason == "probe_timeout":
+                # The audio thread wins the race, and the device is back.
+                self.stalled = False
+                self.stream.pump(1)
+            return real_cancel(reason)
+
+        self.player.cancel_candidate = racing_cancel
+        result = self._probe("a")
+        self.assertEqual(result.outcome, PROBE_COMMITTED_LATE)
+        self.assertTrue(result.committed)
+        self.assertEqual(self.player.state, "idle")
+        self.player.cancel_candidate = real_cancel
+        self.assertEqual(self._probe("b").outcome, PROBE_COMMITTED)
+
+    def test_the_finish_wait_has_its_own_bound(self):
+        """R05-F01a: commit inside the last clip-length before the commit
+        limit. A shared bound exits the finish wait immediately."""
+        polls = [0]
+
+        def sleep(_s):
+            polls[0] += 1
+            # ~0.63 s limit; stall the first 60 polls so commitment is ~0.60 s.
+            self.stream.pump(1, drop=polls[0] <= 60)
+
+        self._sleep = sleep
+        result = self._probe("a")
+        self.assertEqual(result.outcome, PROBE_COMMITTED)
+        self.assertGreater(result.candidate.committed_at,
+                           result.deadline + 0.45)
+        self.assertEqual(self.player.state, "idle")
+        self._sleep = lambda _s: self.stream.pump(1)
+        self.assertEqual(self._probe("b").outcome, PROBE_COMMITTED)
+
+    def test_a_clip_that_never_finishes_is_reported_stuck(self):
+        polls = [0]
+
+        def sleep(_s):
+            polls[0] += 1
+            self.stream.pump(1, drop=polls[0] > 11)
+
+        self._sleep = sleep
+        result = self._probe("a")
+        self.assertEqual(result.outcome, PROBE_STUCK)
+        self.assertFalse(result.player_reusable)
+        self.assertIn("had not finished", result.detail)
+
+
 class AvatarClockTest(unittest.TestCase):
     """The position source behind TanukiLipSync.playTrack(track, getTime)."""
 
@@ -511,13 +615,91 @@ class AvatarClockTest(unittest.TestCase):
         snap = self.player.position()
         self.assertLessEqual(snap.file_time, 5 * BLOCK_S + 1e-9)
 
-    def test_clip_end_flips_the_position_to_stopped_so_the_mouth_closes(self):
-        clip = tone_clip(0.02, samplerate=RATE)
+    def test_a_clip_that_has_not_reached_a_callback_is_starting_not_stopped(self):
+        """R05-F05: between play() and the first callback the controller used
+        to publish an idle snapshot, which the adapter read as a stop for the
+        whole clip."""
+        clip = tone_clip(0.5, samplerate=RATE)
+        self.player.play(clip)
+        snap = self.player.position()                # no pump yet
+        self.assertTrue(snap.playing)
+        self.assertEqual(snap.file_time, 0.0)
+        self.assertAlmostEqual(snap.duration, clip.duration, places=9)
+        self.assertIsNone(snap.ended_reason)
+        # Held at zero for the device latency rather than animated.
+        self.assertAlmostEqual(snap.pre_roll_s, 0.020, places=9)
+        self.assertIsNone(self.player.audible_end)
+
+    def test_pre_roll_is_published_before_audio_and_zero_mid_clip(self):
+        """R05-F07: the Python half of D10's pre_roll_s, guarded directly."""
+        clip = tone_clip(0.5, samplerate=RATE)
+        self.player.play(clip)
+        self.stream.pump(1)
+        early = self.player.position()
+        self.assertGreater(early.pre_roll_s, 0.0)
+        self.assertEqual(early.file_time, 0.0)
+        self.stream.pump(10)
+        mid = self.player.position()
+        self.assertEqual(mid.pre_roll_s, 0.0)
+        self.assertGreater(mid.file_time, 0.0)
+
+    def test_the_clip_is_playing_until_its_audible_end(self):
+        """R05-F06: the last block is written one output latency before it is
+        heard. The position stays playing through that tail, the published
+        audible end is the end of the last block, and only after it does the
+        position report the clip finished."""
+        clip = tone_clip(0.1, samplerate=RATE)
+        self.player.play(clip)
+        self.stream.pump(1)
+        started = self.player.position().controller_time + \
+            self.player.position().pre_roll_s
+        expected_end = started + clip.duration
+        self.assertAlmostEqual(self.player.audible_end, expected_end, places=9)
+        # Pump until the controller has written the whole clip.
+        while self.player.state != "idle":
+            self.stream.pump(1)
+        written_at = self.clock.now()
+        self.assertLess(written_at, expected_end)
+        tail = self.player.position()
+        self.assertTrue(tail.playing, "the tail is still audible")
+        self.assertIsNone(tail.ended_reason)
+        self.assertAlmostEqual(tail.audible_end_s, expected_end - written_at,
+                               places=9)
+        self.assertAlmostEqual(self.player.audible_end,
+                               self.player.finished[-1]["end_block_time"],
+                               places=9)
+        self.assertAlmostEqual(self.player.audible_end, expected_end, places=9)
+        # Through the audible end, the position reports the clip finished.
+        while self.clock.now() < expected_end:
+            self.stream.pump(1)
+        done = self.player.position()
+        self.assertFalse(done.playing)
+        self.assertEqual(done.rate, 0.0)
+        self.assertEqual(done.ended_reason, "clip_end")
+
+    def test_an_explicit_stop_reports_stopped_at_once(self):
+        """A stop has no audible end the controller can state; the mouth must
+        not keep animating a clip the controller abandoned."""
+        clip = tone_clip(0.5, samplerate=RATE)
         self.player.play(clip)
         self.stream.pump(5)
+        self.player.stop("operator")
         snap = self.player.position()
         self.assertFalse(snap.playing)
-        self.assertEqual(snap.rate, 0.0)
+        self.assertEqual(snap.ended_reason, "operator")
+        self.assertIsNone(self.player.audible_end)
+
+    def test_the_committed_position_trace_matches_the_current_controller(self):
+        """R05-F07: the JS cross-check reads a committed, generated fixture.
+        Without this a change to what the controller publishes would leave the
+        stale fixture passing; now it fails here until the fixture is
+        regenerated with tools/make_position_trace.py."""
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+        import make_position_trace as mpt
+        committed = mpt.FIXTURE.read_text(encoding="utf-8")
+        self.assertEqual(mpt.render(mpt.build_trace()), committed,
+                         "tests/fixtures/position_trace.json is stale: run "
+                         "python tools/make_position_trace.py")
 
     def test_a_stale_snapshot_is_a_fault_for_the_renderer(self):
         clip = tone_clip(1.0, samplerate=RATE)

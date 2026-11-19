@@ -50,7 +50,10 @@ from audio_io import (
     OutputPlayer,
     SoundDeviceBackend,
     inventory,
+    PROBE_COMMITTED_LATE,
+    PROBE_STUCK,
     load_clip,
+    run_commit_probe,
     tone_clip,
 )
 from timing import (
@@ -58,7 +61,6 @@ from timing import (
     ESTIMATED,
     DetectorProfile,
     MonotonicClock,
-    PromptCandidate,
     TimingLedger,
     validate_detector_profile,
 )
@@ -632,6 +634,93 @@ class SessionPreflight:
                                  "manifest": str(path),
                                  "manifest_version": manifest.get("version")})
 
+    def _report_probes(self, *, commit: list[float], offset: list[float],
+                       onset: list[float], early: int, timed_out: int,
+                       late: int, skipped_no_onset: int) -> list[CheckResult]:
+        """Turn the probe distributions into checks.
+
+        Separate from the loop so the degenerate inputs - no onset estimate at
+        all, an empty offset list - are testable without a device. Every
+        statistic below is guarded by the emptiness of the list it reads: an
+        earlier ordering called ``median(offset)`` one check before the guard
+        meant to report the empty case, so that case raised instead (R05-F02).
+        """
+        cfg = self.config
+        out: list[CheckResult] = []
+        if len(commit) < cfg.commit_trials:
+            out.append(CheckResult(
+                "commit_timing", FAIL,
+                f"only {len(commit)}/{cfg.commit_trials} probes committed "
+                f"({timed_out} timed out)",
+                blocking=True,
+                data={"committed": len(commit), "timed_out": timed_out}))
+            return out
+
+        out.append(CheckResult(
+            "no_early_output", FAIL if early else PASS,
+            f"{early} of {len(commit)} commitments landed before their "
+            f"deadline",
+            blocking=True, data={"early": early, "trials": len(commit)}))
+
+        p95_commit = _percentile(commit, 0.95)
+        out.append(CheckResult(
+            "commit_delay", PASS,
+            f"n={len(commit)} median {statistics.median(commit):.2f} ms, "
+            f"p95 {p95_commit:.2f} ms, max {max(commit):.2f} ms"
+            + (f"; {late} committed only in the timeout race" if late else ""),
+            data={"n": len(commit),
+                  "median_ms": statistics.median(commit),
+                  "p95_ms": p95_commit, "max_ms": max(commit),
+                  "committed_late": late}))
+
+        if not onset or not offset:
+            out.append(CheckResult(
+                "device_offset", NOT_RUN,
+                f"no probe produced a device-offset estimate "
+                f"({skipped_no_onset} skipped)",
+                data={"skipped_no_onset": skipped_no_onset}))
+            out.append(CheckResult(
+                "onset_delay_target", NOT_RUN,
+                f"no probe produced an onset estimate "
+                f"({skipped_no_onset} skipped)",
+                data={"skipped_no_onset": skipped_no_onset}))
+            return out
+
+        out.append(CheckResult(
+            "device_offset", PASS,
+            f"median {statistics.median(offset):.2f} ms "
+            f"(buffer time minus commit instant)",
+            data={"median_ms": statistics.median(offset),
+                  "max_ms": max(offset), "method": ESTIMATED}))
+
+        p95_onset = _percentile(onset, 0.95)
+        meets = p95_onset <= cfg.max_onset_delay_ms
+        # The decision the user made: record it, warn, and let the session
+        # start. Set timing_blocking for collection.
+        status = PASS if meets else (FAIL if cfg.timing_blocking else WARN)
+        out.append(CheckResult(
+            "onset_delay_target", status,
+            f"estimated p95 onset delay {p95_onset:.2f} ms vs the "
+            f"{cfg.max_onset_delay_ms:.0f} ms configured target "
+            f"({'within' if meets else 'ABOVE'} target; this is a "
+            f"device-latency estimate, not an acoustic measurement, "
+            f"and the target is a proposal rather than a frozen "
+            f"tolerance)",
+            blocking=cfg.timing_blocking,
+            data={"p95_ms": p95_onset,
+                  "median_ms": statistics.median(onset),
+                  "max_ms": max(onset),
+                  "target_ms": cfg.max_onset_delay_ms,
+                  "meets_target": meets,
+                  "method": ESTIMATED,
+                  "skipped_no_onset": skipped_no_onset,
+                  "components_median_ms": {
+                      "commit_delay": statistics.median(commit),
+                      "device_offset": statistics.median(offset),
+                      "clip_leading_silence": cfg.probe_lead_ms,
+                  }}))
+        return out
+
     def measure_output(self, device_index) -> list[CheckResult]:
         """Open the output stream, measure its cadence and its commit timing.
 
@@ -690,106 +779,55 @@ class SessionPreflight:
                 return out
 
             commit, offset, onset = [], [], []
-            early = timed_out = skipped_no_onset = 0
+            early = timed_out = late = skipped_no_onset = 0
             for i in range(cfg.commit_trials):
-                player.begin_attempt(f"preflight-{i}")
-                deadline = self.clock.now() + 0.08
-                cand = PromptCandidate(trial_id=f"preflight-{i}",
-                                       threshold_s=min(cfg.thresholds),
-                                       deadline=deadline,
-                                       scheduled_at=self.clock.now())
-                player.arm(clip, cand)
-                limit = deadline + clip.duration + 0.5
-                while not cand.committed and self.clock.now() < limit:
-                    self._sleep(0.002)
-                if not cand.committed:
-                    # Take the candidate back out of the slot. Leaving it armed
-                    # would make the next probe's begin_attempt() raise, so a
-                    # timed-out measurement crashed the preflight instead of
-                    # reporting a clean FAIL (R04-F01).
-                    player.cancel_candidate("probe_timeout")
+                try:
+                    probe = run_commit_probe(
+                        player, clip, f"preflight-{i}", clock=self.clock,
+                        sleep=self._sleep, threshold_s=min(cfg.thresholds))
+                except AudioFault as exc:
+                    # The helper is built not to leave the player unusable, but
+                    # a device failure mid-loop must still end in a report, not
+                    # a traceback (R05-F01c).
+                    out.append(CheckResult(
+                        "commit_timing", FAIL,
+                        f"probe {i} raised {type(exc).__name__}: {exc}",
+                        blocking=True,
+                        data={"failed_trial": i, "committed": len(commit),
+                              "timed_out": timed_out}))
+                    return out
+                if probe.outcome == PROBE_STUCK:
+                    out.append(CheckResult(
+                        "commit_timing", FAIL,
+                        f"probe {i}: {probe.detail}", blocking=True,
+                        data={"failed_trial": i, "committed": len(commit),
+                              "timed_out": timed_out}))
+                    return out
+                if not probe.committed:
                     timed_out += 1
                     continue
-                if cand.committed_at < deadline:
+                cand = probe.candidate
+                if probe.outcome == PROBE_COMMITTED_LATE:
+                    late += 1
+                if cand.committed_at < probe.deadline:
                     early += 1
-                commit.append((cand.committed_at - deadline) * 1000.0)
+                commit.append((cand.committed_at - probe.deadline) * 1000.0)
                 # An unknown term is skipped and counted, never written as zero
-                # (the pattern removed from the tool in R03-F10c).
+                # (R03-F10c). Defence in depth only: with the tone_clip probe
+                # built above both terms are always set (R05-F02).
                 if cand.device_offset_s is None or cand.onset_delay_s is None:
                     skipped_no_onset += 1
                 else:
                     offset.append(cand.device_offset_s * 1000.0)
                     onset.append(cand.onset_delay_s * 1000.0)
-                while player.state != "idle" and self.clock.now() < limit:
-                    self._sleep(0.002)
-                player.cancel_candidate("preflight_cleanup")
 
-            if len(commit) < cfg.commit_trials:
-                out.append(CheckResult(
-                    "commit_timing", FAIL,
-                    f"only {len(commit)}/{cfg.commit_trials} probes committed "
-                    f"({timed_out} timed out)",
-                    blocking=True,
-                    data={"committed": len(commit), "timed_out": timed_out}))
+            out.extend(self._report_probes(
+                commit=commit, offset=offset, onset=onset, early=early,
+                timed_out=timed_out, late=late,
+                skipped_no_onset=skipped_no_onset))
+            if any(c.name == "commit_timing" and c.status == FAIL
+                   for c in out):
                 return out
-
-            out.append(CheckResult(
-                "no_early_output", FAIL if early else PASS,
-                f"{early} of {len(commit)} commitments landed before their "
-                f"deadline",
-                blocking=True, data={"early": early, "trials": len(commit)}))
-
-            p95_commit = _percentile(commit, 0.95)
-            p95_onset = _percentile(onset, 0.95) if onset else None
-            out.append(CheckResult(
-                "commit_delay", PASS,
-                f"n={len(commit)} median {statistics.median(commit):.2f} ms, "
-                f"p95 {p95_commit:.2f} ms, max {max(commit):.2f} ms",
-                data={"n": len(commit),
-                      "median_ms": statistics.median(commit),
-                      "p95_ms": p95_commit, "max_ms": max(commit)}))
-            out.append(CheckResult(
-                "device_offset", PASS,
-                f"median {statistics.median(offset):.2f} ms "
-                f"(buffer time minus commit instant)",
-                data={"median_ms": statistics.median(offset),
-                      "max_ms": max(offset), "method": ESTIMATED}))
-
-            if not onset:
-                out.append(CheckResult(
-                    "onset_delay_target", NOT_RUN,
-                    f"no probe produced an onset estimate "
-                    f"({skipped_no_onset} skipped)",
-                    data={"skipped_no_onset": skipped_no_onset}))
-            elif p95_onset is None:
-                out.append(CheckResult(
-                    "onset_delay_target", NOT_RUN,
-                    "no onset estimate was formed for any probe"))
-            else:
-                meets = p95_onset <= cfg.max_onset_delay_ms
-                # The decision the user made: record it, warn, and let the
-                # session start. Set timing_blocking for collection.
-                status = PASS if meets else (FAIL if cfg.timing_blocking else WARN)
-                out.append(CheckResult(
-                    "onset_delay_target", status,
-                    f"estimated p95 onset delay {p95_onset:.2f} ms vs the "
-                    f"{cfg.max_onset_delay_ms:.0f} ms configured target "
-                    f"({'within' if meets else 'ABOVE'} target; this is a "
-                    f"device-latency estimate, not an acoustic measurement, "
-                    f"and the target is a proposal rather than a frozen "
-                    f"tolerance)",
-                    blocking=cfg.timing_blocking,
-                    data={"p95_ms": p95_onset,
-                          "median_ms": statistics.median(onset),
-                          "max_ms": max(onset),
-                          "target_ms": cfg.max_onset_delay_ms,
-                          "meets_target": meets,
-                          "method": ESTIMATED,
-                          "components_median_ms": {
-                              "commit_delay": statistics.median(commit),
-                              "device_offset": statistics.median(offset),
-                              "clip_leading_silence": cfg.probe_lead_ms,
-                          }}))
 
             if len(entries) > 2:
                 gaps = [b - a for a, b in zip(entries, entries[1:])]

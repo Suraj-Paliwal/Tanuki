@@ -18,6 +18,7 @@ import assert from 'node:assert/strict';
 import {
   PlaybackClockAdapter, endedReasonToStop,
   STOP_CLIP_END, STOP_STALE, STOP_FAULT, STOP_DISCONNECTED, STOP_REQUESTED,
+  STOP_SUPERSEDED,
 } from '../src/clock-adapter.js';
 
 /** A controllable clock, in milliseconds. */
@@ -194,11 +195,18 @@ test('a snapshot from a superseded clip is rejected', () => {
   assert.ok(adapter.fileTime() >= 1.0);
 });
 
-test('a new clip generation restarts file time from zero', () => {
-  const { adapter, c } = harness();
+test('a new clip playing under the old track is a superseded stop', () => {
+  // The renderer still holds clip 1's track. Following clip 2's position
+  // would animate the wrong track, so the adapter stops and waits for arm().
+  const { adapter, c, stops } = harness();
   adapter.accept(snap({ file_time: 1.8, generation: 1, duration: 2 }));
   c.advance(50);
-  adapter.accept(snap({ file_time: 0.0, generation: 2, duration: 3 }));
+  assert.equal(adapter.accept(snap({ file_time: 0.0, generation: 2,
+                                     duration: 3 })), false);
+  assert.deepEqual(stops.map((s) => s.reason), [STOP_SUPERSEDED]);
+  adapter.arm();
+  assert.equal(adapter.accept(snap({ file_time: 0.0, generation: 2,
+                                     duration: 3 })), true);
   assert.equal(adapter.fileTime(), 0.0);
 });
 
@@ -209,6 +217,12 @@ test('a malformed snapshot is rejected and faulted, not animated', () => {
     assert.equal(adapter.accept(bad), false);
   }
   assert.equal(adapter.rejected, 4);
+  // R05-F09: no generation would escape the supersede check, so it is
+  // malformed rather than assumed to belong to the current clip.
+  const noGen = snap({ file_time: 0.5 });
+  delete noGen.generation;
+  assert.equal(adapter.accept(noGen), false);
+  assert.equal(adapter.rejected, 5);
   assert.ok(faults.every((f) => f.kind === 'malformed_snapshot'));
   assert.equal(adapter.fileTime(), 0);
 });
@@ -221,12 +235,142 @@ test('getTime can be handed to playTrack as a bare function', () => {
   assert.ok(Math.abs(getTime() - 0.35) < 1e-9);
 });
 
-test('before any snapshot the position is zero and nothing has stopped', () => {
-  const { adapter, stops } = harness();
+test('before any snapshot the position is zero, within the stale limit', () => {
+  const { adapter, c, stops } = harness({ staleAfterMs: 250 });
+  assert.equal(adapter.fileTime(), 0);
+  c.advance(200);
   assert.equal(adapter.fileTime(), 0);
   assert.equal(stops.length, 0);
-  assert.equal(adapter.age(), null);
+  assert.equal(adapter.age(), 200);
   assert.equal(adapter.isStale(), false);
+});
+
+test('no first snapshot after arm is a stale fault, not a parked mouth', () => {
+  // R05-F04: the transport dies between playTrack and the first snapshot.
+  // The renderer samples the track at 0 + lead every frame, which on a real
+  // track is a speaking pose, on a Tanuki making no sound.
+  const { adapter, c, stops, faults } = harness({ staleAfterMs: 250 });
+  adapter.arm();
+  c.advance(300);
+  assert.equal(adapter.getTime(), 0);
+  assert.deepEqual(stops.map((s) => s.reason), [STOP_STALE]);
+  assert.equal(faults.filter((f) => f.kind === 'stale_clock').length, 1);
+  assert.ok(adapter.isStale());
+  adapter.getTime();
+  assert.equal(stops.length, 1, 'stops once');
+});
+
+test('the staleness clock restarts at arm, not at construction', () => {
+  const { adapter, c, stops } = harness({ staleAfterMs: 250 });
+  c.advance(10_000);                    // adapter built long before use
+  adapter.arm();
+  c.advance(100);
+  assert.equal(adapter.getTime(), 0);
+  assert.equal(stops.length, 0);
+});
+
+test('an idle snapshot before the clip starts is not a stop', () => {
+  // R05-F05, adapter side: the first snapshot of a generation says "not
+  // playing" with no reason. Nothing has started for it to end.
+  const { adapter, c, stops } = harness();
+  adapter.arm();
+  assert.equal(adapter.accept(snap({ file_time: 0, duration: 0, rate: 0,
+                                     playing: false, generation: 3 })), false);
+  assert.equal(stops.length, 0);
+  assert.equal(adapter.ignored, 1);
+  assert.equal(adapter.accept(snap({ file_time: 0, duration: 2,
+                                     generation: 3 })), true);
+  c.advance(100);
+  assert.ok(Math.abs(adapter.getTime() - 0.1) < 1e-9);
+});
+
+test('the controller clip-starting snapshot holds position at zero', () => {
+  // What OutputPlayer.position() now publishes between play() and the first
+  // callback: playing, file_time 0, and the device latency as pre-roll.
+  const { adapter, c, stops } = harness();
+  adapter.arm();
+  adapter.accept(snap({ file_time: 0, duration: 2, pre_roll_s: 0.020,
+                        generation: 4 }));
+  c.advance(15);
+  assert.equal(adapter.getTime(), 0);
+  assert.equal(stops.length, 0);
+});
+
+test('the mouth keeps moving through the audible tail of a clip', () => {
+  // R05-F06: the controller has written the last block but it is still
+  // coming out of the device. It publishes playing through that tail.
+  const { adapter, c, stops } = harness();
+  adapter.accept(snap({ file_time: 0.43, duration: 0.45, generation: 1,
+                        audible_end_s: 0.02 }));
+  c.advance(15);
+  assert.ok(Math.abs(adapter.getTime() - 0.445) < 1e-9);
+  assert.equal(stops.length, 0);
+  c.advance(5);
+  adapter.accept(snap({ file_time: 0, duration: 0, rate: 0, playing: false,
+                        generation: 1, ended_reason: 'clip_end' }));
+  assert.deepEqual(stops.map((s) => s.reason), [STOP_CLIP_END]);
+});
+
+test('a stop is latched: a same-generation snapshot cannot undo it', () => {
+  // R05-F08: a fault, disconnect or operator stop is terminal for the clip.
+  const { adapter, c, stops } = harness();
+  adapter.accept(snap({ file_time: 0.2, generation: 6 }));
+  adapter.fault();
+  const held = adapter.getTime();
+  assert.equal(adapter.accept(snap({ file_time: 0.3, generation: 6 })), false);
+  c.advance(100);
+  assert.equal(adapter.getTime(), held);
+  assert.ok(adapter.stopped);
+  assert.equal(stops.length, 1);
+  assert.equal(stops[0].reason, STOP_FAULT);
+});
+
+test('a stale stop recovers only through an explicit arm', () => {
+  const { adapter, c, stops } = harness({ staleAfterMs: 250 });
+  adapter.accept(snap({ file_time: 0.2, generation: 6, duration: 5 }));
+  c.advance(300);
+  adapter.getTime();
+  assert.equal(stops[0].reason, STOP_STALE);
+  // The stream resumes: still stopped until the UI re-arms.
+  assert.equal(adapter.accept(snap({ file_time: 0.6, generation: 6,
+                                     duration: 5 })), false);
+  assert.ok(adapter.stopped);
+  adapter.arm({ generation: 6 });
+  assert.equal(adapter.accept(snap({ file_time: 0.6, generation: 6,
+                                     duration: 5 })), true);
+  assert.equal(adapter.getTime(), 0.6);
+  assert.equal(stops.length, 1);
+});
+
+test('arm clears the previous clip position so it cannot leak', () => {
+  // R05-F09: after clip A ends near 0.43 s, clip B must not be sampled there
+  // while its first snapshot is in flight.
+  const { adapter, c } = harness();
+  adapter.accept(snap({ file_time: 0.40, generation: 1, duration: 0.45 }));
+  c.advance(30);
+  adapter.getTime();
+  adapter.accept(snap({ file_time: 0, duration: 0, rate: 0, playing: false,
+                        generation: 1, ended_reason: 'clip_end' }));
+  assert.ok(adapter.getTime() > 0.4);
+  adapter.arm();
+  assert.equal(adapter.getTime(), 0);
+});
+
+test('after arm, a late snapshot or stop from the previous clip is refused', () => {
+  // Clip A (gen 5) is stopped locally; the controller's own stop (gen 6)
+  // arrives after the UI has armed for clip B (gen 7).
+  const { adapter, stops } = harness();
+  adapter.accept(snap({ file_time: 0.5, generation: 5 }));
+  adapter.stop();
+  adapter.arm();
+  assert.equal(adapter.accept(snap({ file_time: 0.9, generation: 5 })), false);
+  assert.equal(adapter.rejected, 1);
+  assert.equal(adapter.accept(snap({ file_time: 0, duration: 0, rate: 0,
+                                     playing: false, generation: 6,
+                                     ended_reason: 'operator' })), false);
+  assert.equal(adapter.accept(snap({ file_time: 0.1, generation: 7 })), true);
+  assert.equal(adapter.getTime(), 0.1);
+  assert.equal(stops.length, 1);
 });
 
 test('ended reasons map conservatively onto stop reasons', () => {
@@ -252,18 +396,17 @@ test('a recorded controller trace replays to the positions it recorded', async (
   const { fileURLToPath } = await import('node:url');
   const path = fileURLToPath(
     new URL('fixtures/position_trace.json', import.meta.url));
-  let trace;
-  try {
-    trace = JSON.parse(await readFile(path, 'utf8'));
-  } catch {
-    // The fixture is generated; skip rather than fail if it is absent.
-    return;
-  }
+  // The fixture is committed, and test_audio_io checks it matches the
+  // current controller. A missing fixture is a failure, not a pass (R05-F10).
+  const trace = JSON.parse(await readFile(path, 'utf8'));
+  assert.ok(Array.isArray(trace.frames) && trace.frames.length > 0);
+  assert.ok(Array.isArray(trace.expect_stops), 'expect_stops missing');
   const c = clock(0);
   const stops = [];
   const adapter = new PlaybackClockAdapter({
     now: c.now, onStop: (reason) => stops.push(reason),
   });
+  adapter.arm();
   let checked = 0;
   for (const frame of trace.frames) {
     c.advance(frame.advance_ms);
@@ -275,6 +418,8 @@ test('a recorded controller trace replays to the positions it recorded', async (
       checked++;
     }
   }
+  assert.equal(checked, trace.asserted_frames);
   assert.ok(checked > 0, 'trace contained no assertions');
-  assert.deepEqual(stops, trace.expect_stops ?? stops);
+  assert.ok(trace.expect_stops.length > 0, 'trace expects no stop');
+  assert.deepEqual(stops, trace.expect_stops);
 });

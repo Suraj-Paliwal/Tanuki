@@ -24,6 +24,8 @@
   },
   "three_addon_closure": {
     "note": "resolved by following relative imports from the six addons app.js uses; 11 files, 158 KB, instead of the 29 MB vendor tree",
+    "root": "../08_avisspeech/src/app.js",
+    "root_note": "the baseline application file whose imports define the six entry points. It is deliberately not copied into this snapshot: per goal.md section 12 the application shell is M4 work. The only in-snapshot consumer, tools/avatar_clock_check.html, imports GLTFLoader alone; the other five are carried so M4 does not have to re-resolve the closure.",
     "entry_points": [
       "loaders/GLTFLoader.js",
       "environments/RoomEnvironment.js",

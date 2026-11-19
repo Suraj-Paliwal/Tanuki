@@ -58,6 +58,8 @@ __all__ = [
     "ContinuousRecorder", "RecordingResult", "OutputPlayer", "WaveSink",
     "CancelOutcome", "CANCEL_REMOVED", "CANCEL_ALREADY_CANCELLED",
     "CANCEL_TOO_LATE", "CANCEL_NOTHING_ARMED",
+    "ProbeResult", "run_commit_probe", "PROBE_COMMITTED",
+    "PROBE_COMMITTED_LATE", "PROBE_TIMED_OUT", "PROBE_STUCK",
     "SoundDeviceBackend", "FakeBackend", "FakeStream",
     "CAPTURE_RATE", "VAD_RATE", "DEFAULT_BLOCKSIZE",
 ]
@@ -1137,6 +1139,12 @@ class OutputPlayer:
 
         self._clip: Clip | None = None
         self._ended_reason: str | None = None
+        # When the last sample of the clip that just finished becomes audible,
+        # and how long that clip was. The device holds already-written frames
+        # for one output latency, so the controller finishes writing before the
+        # participant finishes hearing (R05-F06).
+        self._audible_end: float | None = None
+        self._ended_duration: float = 0.0
         self._playing_candidate: PromptCandidate | None = None
         self._pos = 0                      # frames of the active clip emitted
         self._started_at: float | None = None   # audible time of clip frame 0
@@ -1272,6 +1280,7 @@ class OutputPlayer:
             self._pos = 0
             self._started_at = None
             self._ended_reason = None
+            self._audible_end = None
             self.state = _PLAYING
             gen = self.generation
         self._log("output_play_requested", clip=clip.as_record(), purpose=kind,
@@ -1373,6 +1382,12 @@ class OutputPlayer:
             self._pos = 0
             self._started_at = None
             self._ended_reason = reason
+            # An explicit stop reports stopped at once. Frames already inside
+            # the device buffer will still be heard - goal.md section 6 makes
+            # that explicit and promises no perfect cancellation - but the
+            # mouth must not keep animating a clip the controller has
+            # abandoned.
+            self._audible_end = None
             self.state = _IDLE
             self.generation += 1
             # Only true when what was actually playing is this attempt's
@@ -1421,6 +1436,12 @@ class OutputPlayer:
                     "generation": self.generation,
                     "end_block_time": timing.first_frame_time + take / self.samplerate,
                 })
+                # The final block has been handed over, but it is not
+                # audible until it clears the device buffer. Record when that
+                # is so position() keeps reporting the tail (R05-F06).
+                self._audible_end = (timing.first_frame_time
+                                     + take / self.samplerate)
+                self._ended_duration = clip.duration
                 self._clip = None
                 self._playing_candidate = None
                 self._pos = 0
@@ -1485,6 +1506,7 @@ class OutputPlayer:
                        f"reported={reported:.4f};per_block={device_offset:.4f}",
             )
         self._ended_reason = None
+        self._audible_end = None
         cand.commit(now, onset)
         cand.device_offset_s = device_offset
         cand.clip_leading_silence_s = lead
@@ -1519,11 +1541,39 @@ class OutputPlayer:
         with self._lock:
             clip = self._clip
             now = self.clock.now()
-            if clip is None or self._started_at is None:
+
+            if clip is None:
+                # Either nothing is playing, or the last clip has been fully
+                # written but is still coming out of the device. The second
+                # case is still playing as far as the participant and the
+                # mouth are concerned (R05-F06).
+                if self._audible_end is not None and now < self._audible_end:
+                    remaining = self._audible_end - now
+                    duration = self._ended_duration
+                    return PlaybackPosition(
+                        file_time=max(0.0, duration - remaining),
+                        controller_time=now, rate=1.0, playing=True,
+                        duration=duration, generation=self.generation,
+                        audible_end_s=remaining)
                 return PlaybackPosition(file_time=0.0, controller_time=now,
                                         rate=0.0, playing=False, duration=0.0,
                                         generation=self.generation,
                                         ended_reason=self._ended_reason)
+
+            if self._started_at is None:
+                # A clip is loaded but no callback has carried it yet, so the
+                # audible start is not known. This is a clip *starting*, not a
+                # stop: publishing it as "not playing" made a consumer that
+                # sampled immediately after play() tear the mouth down for the
+                # whole clip (R05-F05). The pre-roll is the device's own
+                # latency estimate, which is what the consumer needs in order
+                # to hold position at zero rather than animate.
+                return PlaybackPosition(
+                    file_time=0.0, controller_time=now, rate=1.0, playing=True,
+                    duration=clip.duration, generation=self.generation,
+                    pre_roll_s=max(0.0, self.latency_s),
+                    audible_end_s=self.latency_s + clip.duration)
+
             # Frames handed to the device become audible at _started_at onward;
             # what is audible *now* is bounded by both the clip length and how
             # much has actually been written.
@@ -1539,8 +1589,111 @@ class OutputPlayer:
                                     rate=1.0, playing=True,
                                     duration=clip.duration,
                                     generation=self.generation,
-                                    pre_roll_s=pre_roll)
+                                    pre_roll_s=pre_roll,
+                                    audible_end_s=max(
+                                        0.0, self._started_at + clip.duration - now))
 
     @property
     def finished(self) -> list[dict]:
         return list(self._finished)
+
+    @property
+    def audible_end(self) -> float | None:
+        """Controller time at which the current or last clip is fully audible.
+
+        While a clip is still being written this is the projected end
+        (``started_at + duration``); once its last block has been handed over
+        it is the recorded end of that block. ``None`` before the first callback
+        of a clip (its audible start is not known yet), when no clip has ended
+        on its own, and after an explicit stop, which has no audible end the
+        controller can state. M3 needs this rather than the write-completion
+        time: goal.md section 6 defines recall time zero as the instruction's
+        *audible* end.
+        """
+        with self._lock:
+            if self._clip is not None:
+                if self._started_at is None:
+                    return None
+                return self._started_at + self._clip.duration
+            return self._audible_end
+
+
+# --- commit-timing probe ------------------------------------------------------
+
+PROBE_COMMITTED = "committed"          # committed before the wait limit
+PROBE_COMMITTED_LATE = "committed_late"  # committed in the timeout-cancel race
+PROBE_TIMED_OUT = "timed_out"          # never committed; slot released
+PROBE_STUCK = "stuck"                  # committed but the clip never finished
+
+
+@dataclass
+class ProbeResult:
+    """One deadline-gated probe, as the preflight and the bench tool use it."""
+
+    trial_id: str
+    outcome: str
+    candidate: PromptCandidate
+    deadline: float
+    detail: str = ""
+
+    @property
+    def committed(self) -> bool:
+        return self.outcome in (PROBE_COMMITTED, PROBE_COMMITTED_LATE)
+
+    @property
+    def player_reusable(self) -> bool:
+        """Whether another probe may be armed on the same player."""
+        return self.outcome != PROBE_STUCK
+
+
+def run_commit_probe(player: "OutputPlayer", clip: Clip, trial_id: str, *,
+                     clock: MonotonicClock, sleep: Callable[[float], None],
+                     threshold_s: float, lead_s: float = 0.08,
+                     slack_s: float = 0.5, poll_s: float = 0.002) -> ProbeResult:
+    """Arm one prompt, wait for it to commit and finish, and leave the slot clean.
+
+    Shared by ``preflight.SessionPreflight.measure_output`` and
+    ``tools/check_audio.py`` so the two loops cannot drift apart again. The
+    contract is that this never leaves the player in a state where the next
+    probe's ``begin_attempt`` or ``arm`` raises, unless it says so by returning
+    ``PROBE_STUCK``:
+
+    * the commit wait and the wait for the clip to finish have **separate**
+      bounds. Sharing one let a probe that committed in the last few
+      milliseconds before the limit skip the finish wait entirely, so the next
+      ``arm`` met a still-playing clip and raised (R05-F01);
+    * a timeout cancels the candidate, and a cancellation that comes back
+      ``too_late_committed`` is a probe that *did* commit, in the race between
+      the check and the cancel. It played, so it is reported as a late commit
+      and waited out, not counted as a timeout (R05-F01b);
+    * a clip that does not finish within its own bound is ``PROBE_STUCK``, which
+      the caller turns into a reported failure instead of arming over it.
+    """
+    player.begin_attempt(trial_id)
+    deadline = clock.now() + lead_s
+    cand = PromptCandidate(trial_id=trial_id, threshold_s=threshold_s,
+                           deadline=deadline, scheduled_at=clock.now())
+    player.arm(clip, cand)
+    limit = deadline + clip.duration + slack_s
+    while not cand.committed and clock.now() < limit:
+        sleep(poll_s)
+
+    outcome = PROBE_COMMITTED
+    if not cand.committed:
+        cancel = player.cancel_candidate("probe_timeout")
+        if cancel.outcome != CANCEL_TOO_LATE:
+            return ProbeResult(trial_id, PROBE_TIMED_OUT, cand, deadline,
+                               f"no commitment within {limit - deadline:.3f} s "
+                               f"of the deadline ({cancel.outcome})")
+        outcome = PROBE_COMMITTED_LATE
+
+    # The clip started; wait it out against a bound of its own.
+    idle_limit = clock.now() + clip.duration + slack_s
+    while player.state != "idle" and clock.now() < idle_limit:
+        sleep(poll_s)
+    if player.state != "idle":
+        return ProbeResult(trial_id, PROBE_STUCK, cand, deadline,
+                           f"committed but the clip had not finished "
+                           f"{clip.duration + slack_s:.3f} s later")
+    player.cancel_candidate("probe_cleanup")
+    return ProbeResult(trial_id, outcome, cand, deadline)

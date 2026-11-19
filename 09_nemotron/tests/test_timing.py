@@ -736,6 +736,22 @@ class PlaybackPositionTest(unittest.TestCase):
         snap = self._snapshot(rate=0.0, playing=False)
         self.assertAlmostEqual(interpolate(snap, 100.2), 1.0, places=9)
 
+    def test_position_holds_through_the_pre_roll_then_advances(self):
+        """R05-F07: nothing is audible until the device buffer clears, so the
+        position must not advance through the remaining pre-roll."""
+        snap = self._snapshot(file_time=0.0, pre_roll_s=0.020)
+        self.assertEqual(interpolate(snap, 100.000), 0.0)
+        self.assertEqual(interpolate(snap, 100.015), 0.0)
+        self.assertAlmostEqual(interpolate(snap, 100.050), 0.030, places=9)
+
+    def test_a_late_snapshot_does_not_move_the_position_backwards(self):
+        """R05-F12c: the adapter's monotonic guard, given the last answer."""
+        first = self._snapshot(file_time=1.0)
+        ahead = interpolate(first, 100.2)                 # 1.2
+        behind = self._snapshot(file_time=1.15, controller_time=100.2)
+        self.assertLess(interpolate(behind, 100.2), ahead)
+        self.assertEqual(interpolate(behind, 100.2, floor=ahead), ahead)
+
 
 class TimingLedgerTest(unittest.TestCase):
     def test_records_are_ordered_and_estimates_keep_their_method(self):

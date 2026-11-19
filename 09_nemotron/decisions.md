@@ -260,8 +260,10 @@ the current attempt is refused (R03-F07).
 ## D8 — Tests run on a fake backend with a manual clock
 
 **Decided (M1).** `FakeBackend` implements the same interface as the PortAudio
-backend and is pumped by the test, which advances a `ManualClock`. All 153
-current tests use it, and it models the two clock domains separately: the
+backend and is pumped by the test, which advances a `ManualClock`. Every
+Python test that touches an audio stream uses it (no count is given here: a
+number in this sentence went stale in three consecutive rounds, R04-F05 and
+R05-F03), and it models the two clock domains separately: the
 device clock advances by exactly one block per block while callback entry can
 be delayed, which is what makes the jitter-versus-loss cases testable at all.
 
@@ -274,6 +276,102 @@ deterministically.
 validation. Real device latency, acoustic onset, echo and behaviour under load
 are explicitly out of its scope and remain `NOT_RUN` in
 `validation/audio_spike.md`.
+
+## D9 — The browser extrapolates from snapshot arrival, not from the controller clock
+
+**Decided (M1, avatar checkpoint).** `src/clock-adapter.js` timestamps each
+position snapshot when it arrives and extrapolates from that local instant. It
+does not attempt to map `controller_time` into the browser time base.
+
+**Why.** `controller_time` is a `perf_counter` reading inside another process.
+`performance.now()` has a different epoch and its own drift, and `goal.md`
+section 7 states plainly that browser timing is not authoritative. Estimating
+the offset between the two clocks would mean estimating it *across the very
+transport whose latency is the unknown* - and getting it wrong moves the mouth
+in whichever direction the error points, including early.
+
+**Cost, stated rather than hidden.** The mouth lags by however long a snapshot
+took to arrive, L. During a clip's pre-roll it lags by about **2L**:
+`pre_roll_s` is stated relative to `controller_time`, but the adapter subtracts
+it from an arrival-based age, so at arrival the remaining pre-roll is overstated
+by L on top of the arrival lag itself (R05-F12a). On loopback both are
+sub-millisecond, but they are real biases, they are never subtracted out, and
+`transportBiasNote` on the adapter says so. They are currently unmeasured
+because there is no transport yet (M3/M4 own the server).
+
+**Alternatives considered.** (a) Clock-offset estimation with a slow tracker,
+as the device offset uses. Rejected for now: the device-offset estimator works
+because both of its terms are sampled at the same instant, which is exactly
+what a cross-process transport cannot offer. Worth revisiting once the real
+transport exists and its jitter can be characterised. (b) Having the browser
+drive its own `<audio>` element. Rejected outright: the goal forbids playing
+the same clip twice, and it would put protocol-critical timing on the browser.
+
+## D10 — The controller publishes what the renderer cannot infer
+
+**Decided (M1, avatar checkpoint).** `timing.PlaybackPosition` gained two
+fields because a cross-language check showed the renderer was guessing at both:
+
+- `pre_roll_s` - seconds until the clip becomes audible. Frames handed to the
+  device sit in its output buffer first, so for the first output-latency of a
+  clip the audible position is still zero. Extrapolating through that window
+  ran the mouth ahead of the sound by the device latency at the start of every
+  clip, roughly 20 ms on the bench configuration, and the start of a clip is
+  where lip sync is most visible.
+- `ended_reason` - why playback stopped. An idle snapshot carries no clip:
+  `file_time` and `duration` are both zero whether the clip finished or an
+  operator stopped it. The adapter had been inferring completion from
+  `file_time` reaching `duration`, which cannot work on an idle snapshot, and
+  `goal.md` section 6 requires terminal reasons to stay distinct.
+
+**Why publish rather than infer.** In both cases the controller already knew
+the answer and the renderer structurally could not. An inference that happens
+to be right on the bench and wrong on real hardware is worse than no
+inference: this is the same lesson as D5's latency reports and D3's gap basis.
+The adapter now maps an absent `ended_reason` to "stopped" rather than
+"completed", because "the clip finished" is the one reading that could be
+mistaken for the participant having heard the whole prompt.
+
+**How they were found.** `tools/make_position_trace.py` drives the real
+`OutputPlayer` and emits a trace in which only every fifth position is
+delivered to the adapter; the rest are assertions the adapter must reach by
+extrapolating, with the controller's own position as the expected value. Both
+defects failed that check on its first run. Hand-written fixtures on each side
+would have agreed with each other and been wrong together.
+
+**Extended after review R05.** The same principle covered three more gaps,
+each a case where the controller knew the answer and the published contract
+did not say it:
+
+- *A clip that is starting.* Between `play()` and the first callback the
+  audible start is unknown, and `position()` used to report that window as
+  "not playing", which the adapter correctly read as a stop - for the whole
+  clip (R05-F05). It now publishes playing at file time 0, with the stream's
+  reported latency as `pre_roll_s` because nothing better is known yet.
+- *The audible end* - `audible_end_s`, the symmetric twin of `pre_roll_s`. The
+  last block is written one output latency before it is heard. The position
+  used to flip to "not playing" at write completion, which closed the mouth
+  early and, more seriously, would have handed M3 an "instruction audible end"
+  (`goal.md` §6, `recall_cap_origin`) early by the output latency on every
+  trial (R05-F06). The position now stays `playing` through the tail and
+  `OutputPlayer.audible_end` exposes the controller-time instant. The
+  alternative R05 offered - a post-roll field and a deferred stop in the
+  adapter - was not taken, because it would leave every other consumer of
+  the playing flag with the early end. An explicit stop still reports stopped
+  at once: frames already in the device buffer will be heard (`goal.md` §6
+  promises no perfect cancellation), but the mouth must not keep animating a
+  clip the controller abandoned.
+- *The adapter's lifecycle.* `arm()` before every `playTrack`, latched stops,
+  a staleness clock that starts at arm, and a required `generation`
+  (R05-F04, F08, F09). This is the browser half of the same rule: the adapter
+  acts only on what it has been told for *this* clip.
+
+**Still unestablished.** `pre_roll_s` and the audible end inherit the
+device-latency uncertainty recorded in D5 (two estimators that disagree by
+about 12 ms on WASAPI). Mid-clip both come from the per-block DAC time, not the
+reported latency. Visual synchronisation is unverified;
+`tools/avatar_clock_check.html` exists to check the adapter against the real
+renderer and has not been opened.
 
 ---
 
@@ -288,4 +386,5 @@ in `goal.md` section 14.
 | D4 | The detector profile (frame size, hangover) as part of the frozen manipulation |
 | D5 | The final PC/speaker/microphone configuration and the frozen timing tolerance |
 | D7 | The event precedence table and the rearming rule in `goal.md` section 6 |
+| D9, D10 | Nothing research-owned. Both are engineering choices about where a number is computed; neither changes the manipulation |
 | D4 | Which reading of "where speech ended" the live deadline counts from (`run_end` or `last_strong`), and the lateness budget beyond which a deadline becomes a deviation |
